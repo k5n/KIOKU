@@ -1,3 +1,105 @@
-fn main() {
-    println!("{}", evaluate::dataset_banner("LongMemEval"));
+use anyhow::Context;
+use serde::{Deserialize, Serialize};
+
+/// LongMemEval データセット全体を表すルート構造です。
+/// JSON のトップレベルは配列で、各要素が 1 問分の評価サンプルです。
+pub type LongMemEvalDataset = Vec<LongMemEvalEntry>;
+
+/// LongMemEval の 1 サンプル分のデータです。
+/// 質問、正解、正解を含むセッション ID 群、探索対象の会話履歴をまとめて保持します。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LongMemEvalEntry {
+    pub question_id: String,
+    pub question_type: String,
+    pub question: String,
+    pub question_date: String,
+    pub answer: LongMemEvalAnswer,
+    pub answer_session_ids: Vec<String>,
+    pub haystack_dates: Vec<String>,
+    pub haystack_session_ids: Vec<String>,
+    pub haystack_sessions: Vec<Vec<LongMemEvalMessage>>,
+}
+
+impl LongMemEvalEntry {
+    /// 日付、セッション ID、メッセージ列を同じ添字で束ねて扱いやすくします。
+    pub fn sessions(&self) -> impl Iterator<Item = LongMemEvalSessionRef<'_>> {
+        self.haystack_dates
+            .iter()
+            .zip(self.haystack_session_ids.iter())
+            .zip(self.haystack_sessions.iter())
+            .map(|((date, session_id), messages)| LongMemEvalSessionRef {
+                date,
+                session_id,
+                messages,
+            })
+    }
+}
+
+/// LongMemEval の回答値です。
+/// データセットでは文字列回答と数値回答が混在するため、untagged enum で受けます。
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LongMemEvalAnswer {
+    Text(String),
+    Integer(i64),
+    Float(f64),
+}
+
+impl LongMemEvalAnswer {
+    pub fn as_string(&self) -> String {
+        match self {
+            Self::Text(value) => value.clone(),
+            Self::Integer(value) => value.to_string(),
+            Self::Float(value) => value.to_string(),
+        }
+    }
+}
+
+/// 1 セッション分の会話履歴への参照です。
+/// 元 JSON では日付、セッション ID、メッセージ列が別配列なので、参照で束ねて提供します。
+#[derive(Debug, Clone, Copy)]
+pub struct LongMemEvalSessionRef<'a> {
+    pub date: &'a str,
+    pub session_id: &'a str,
+    pub messages: &'a [LongMemEvalMessage],
+}
+
+/// 会話中の 1 発話を表します。
+/// LongMemEval では `user` と `assistant` の 2 種類の role が現れます。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LongMemEvalMessage {
+    pub role: LongMemEvalRole,
+    pub content: String,
+}
+
+/// 発話ロールです。
+/// 未知のロールが来ても落とさないように文字列を保持できる形にしています。
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LongMemEvalRole {
+    User,
+    Assistant,
+    #[serde(untagged)]
+    Other(String),
+}
+
+fn main() -> anyhow::Result<()> {
+    let path = "data/longmemeval_s_cleaned.json";
+    let json_data = std::fs::read_to_string(path)
+        .context(format!("failed to read LongMemEval dataset file: {}", path))?;
+    let dataset: LongMemEvalDataset =
+        serde_json::from_str(&json_data).context("failed to parse LongMemEval dataset JSON")?;
+
+    for entry in &dataset {
+        println!("Question ID: {}", entry.question_id);
+        println!("Question Type: {}", entry.question_type);
+        println!("Answer: {}", entry.answer.as_string());
+
+        if let Some(session) = entry.sessions().next() {
+            println!("First Session ID: {}", session.session_id);
+            println!("First Session Date: {}", session.date);
+        }
+    }
+
+    Ok(())
 }
