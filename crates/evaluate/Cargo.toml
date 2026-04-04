@@ -1,0 +1,18 @@
+[package]
+name = "evaluate"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+
+[[bin]]
+name = "locomo"
+path = "src/bin/locomo.rs"
+
+[[bin]]
+name = "longmemeval"
+path = "src/bin/longmemeval.rs"
