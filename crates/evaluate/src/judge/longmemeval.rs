@@ -6,6 +6,7 @@ use crate::model::{BenchmarkQuestion, GeneratedAnswer};
 #[derive(Debug, Default)]
 pub struct LongMemEvalJudge;
 
+// FIXME: これでは判定が甘すぎるし、日本語はベンチマークで想定していない。
 const ABSTENTION_MARKERS: &[&str] = &[
     "unknown",
     "not enough",
@@ -28,6 +29,7 @@ impl Judge for LongMemEvalJudge {
             .map(|answer| super::traits::normalize_text(answer))
             .any(|gold| gold == normalized_generated);
 
+        // FIXME: これでは判定が甘すぎる
         let abstention_match = question.is_abstention
             && ABSTENTION_MARKERS
                 .iter()
