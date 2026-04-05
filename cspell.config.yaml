@@ -5,6 +5,7 @@ dictionaries: []
 words:
   - Agentic
   - BLEU
+  - chrono
   - KIOKU
   - lancedb
   - locomo

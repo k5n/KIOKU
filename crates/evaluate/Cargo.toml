@@ -16,13 +16,5 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [[bin]]
-name = "locomo"
-path = "src/bin/locomo.rs"
-
-[[bin]]
-name = "longmemeval"
-path = "src/bin/longmemeval.rs"
-
-[[bin]]
 name = "evaluate"
 path = "src/bin/evaluate.rs"
