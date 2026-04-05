@@ -128,7 +128,18 @@ impl Conversation {
             }
         }
 
-        let mut session_numbers: Vec<_> = starts.keys().chain(messages.keys()).copied().collect();
+        for session_number in messages.keys() {
+            if !starts.contains_key(session_number) {
+                let session_id = format!("session_{session_number}");
+                anyhow::bail!("missing `{session_id}_date_time` for `{session_id}`");
+            }
+        }
+
+        let mut session_numbers: Vec<_> = starts
+            .keys()
+            .filter(|session_number| messages.contains_key(session_number))
+            .copied()
+            .collect();
         session_numbers.sort_unstable();
         session_numbers.dedup();
 
@@ -299,6 +310,10 @@ fn parse_locomo_datetime(value: &str) -> anyhow::Result<DateTime<Utc>> {
         "%Y-%m-%d %H:%M",
         "%Y/%m/%d %H:%M:%S",
         "%Y/%m/%d %H:%M",
+        "%I:%M %P on %-d %B, %Y",
+        "%I:%M %P on %d %B, %Y",
+        "%I:%M %p on %-d %B, %Y",
+        "%I:%M %p on %d %B, %Y",
     ];
 
     for format in FORMATS {
@@ -401,6 +416,33 @@ mod tests {
 
         let error = conversation.ordered_sessions().unwrap_err().to_string();
         assert!(error.contains("missing `session_1_date_time`"));
+    }
+
+    #[test]
+    fn ignores_orphan_datetime_sessions_from_official_dataset() {
+        let conversation = Conversation {
+            speaker_a: "A".to_string(),
+            speaker_b: "B".to_string(),
+            sessions: HashMap::from([
+                (
+                    "session_1".to_string(),
+                    SessionContent::Messages(vec![message("D1", "A", "hello")]),
+                ),
+                (
+                    "session_1_date_time".to_string(),
+                    SessionContent::DateTime("2024-01-01 09:00".to_string()),
+                ),
+                (
+                    "session_2_date_time".to_string(),
+                    SessionContent::DateTime("2024-01-02 09:00".to_string()),
+                ),
+            ]),
+        };
+
+        let ordered = conversation.ordered_sessions().unwrap();
+
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].session_id, "session_1");
     }
 
     #[test]
