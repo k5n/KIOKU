@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow, ensure};
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -197,11 +197,34 @@ pub fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<Bench
 }
 
 fn parse_longmemeval_date(value: &str) -> anyhow::Result<DateTime<Utc>> {
-    let parsed = NaiveDate::parse_from_str(value, "%Y-%m-%d")
-        .with_context(|| format!("failed to parse LongMemEval date `{value}`"))?
-        .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| anyhow!("invalid date components for `{value}`"))?;
-    Ok(DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
+    const FORMATS: &[&str] = &[
+        "%Y/%m/%d (%a) %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ];
+
+    for format in FORMATS {
+        if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
+            return Ok(DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc));
+        }
+    }
+
+    if let Ok(parsed) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        let parsed = parsed
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow!("invalid date components for `{value}`"))?;
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc));
+    }
+
+    if let Ok(parsed) = chrono::NaiveDate::parse_from_str(value, "%Y/%m/%d") {
+        let parsed = parsed
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow!("invalid date components for `{value}`"))?;
+        return Ok(DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc));
+    }
+
+    anyhow::bail!("failed to parse LongMemEval date `{value}`");
 }
 
 fn longmemeval_role_name(role: &LongMemEvalRole) -> &str {
