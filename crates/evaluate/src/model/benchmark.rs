@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum BenchmarkDataset {
+    #[serde(rename = "locomo")]
     LoCoMo,
+    #[serde(rename = "longmemeval")]
     LongMemEval,
 }
 
@@ -68,4 +69,21 @@ pub struct BenchmarkQuestion {
 pub enum GoldAnswerVariant {
     Default,
     Adversarial,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BenchmarkDataset;
+
+    #[test]
+    fn benchmark_dataset_serializes_to_canonical_names() {
+        assert_eq!(
+            serde_json::to_string(&BenchmarkDataset::LoCoMo).unwrap(),
+            "\"locomo\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BenchmarkDataset::LongMemEval).unwrap(),
+            "\"longmemeval\""
+        );
+    }
 }
