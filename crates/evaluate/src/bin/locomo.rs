@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -77,6 +77,16 @@ pub enum SessionContent {
     Messages(Vec<Message>),
 }
 
+/// 動的キーから復元した 1 セッション分の参照です。
+/// `session_N` と `session_N_date_time` の 1:1 対応が取れたものだけを返します。
+#[derive(Debug, Clone)]
+pub struct LoCoMoSessionRef<'a> {
+    pub session_number: usize,
+    pub session_id: String,
+    pub start_time: &'a str,
+    pub messages: &'a [Message],
+}
+
 /// 会話中の 1 発話を表します。
 /// 発話者や本文に加えて、画像 URL や補助メタデータも保持します。
 #[derive(Debug, Serialize, Deserialize)]
@@ -122,6 +132,94 @@ pub enum ObservationValue {
     TextAndIds((String, Vec<String>)),
 }
 
+impl Conversation {
+    /// 動的キーをパースしてセッション一覧を復元します。
+    /// `session_N` と `session_N_date_time` の両方が存在することを検証し、
+    /// セッション番号で昇順ソートして返します。
+    pub fn ordered_sessions(&self) -> anyhow::Result<Vec<LoCoMoSessionRef<'_>>> {
+        let mut starts = HashMap::new();
+        let mut messages = HashMap::new();
+
+        for (key, value) in &self.sessions {
+            let parsed = ParsedSessionKey::parse(key)?;
+            match (parsed.kind, value) {
+                (ParsedSessionKeyKind::StartTime, SessionContent::DateTime(start_time)) => {
+                    starts.insert(parsed.session_number, start_time.as_str());
+                }
+                (ParsedSessionKeyKind::Messages, SessionContent::Messages(session_messages)) => {
+                    messages.insert(parsed.session_number, session_messages.as_slice());
+                }
+                (ParsedSessionKeyKind::StartTime, SessionContent::Messages(_)) => {
+                    bail!("expected datetime string for key `{key}`")
+                }
+                (ParsedSessionKeyKind::Messages, SessionContent::DateTime(_)) => {
+                    bail!("expected message array for key `{key}`")
+                }
+            }
+        }
+
+        let mut session_numbers: Vec<_> = starts.keys().chain(messages.keys()).copied().collect();
+        session_numbers.sort_unstable();
+        session_numbers.dedup();
+
+        let mut ordered_sessions = Vec::with_capacity(session_numbers.len());
+        for session_number in session_numbers {
+            let session_id = format!("session_{session_number}");
+            let start_time = starts
+                .get(&session_number)
+                .copied()
+                .ok_or_else(|| anyhow!("missing `{session_id}_date_time` for `{session_id}`"))?;
+            let session_messages = messages
+                .get(&session_number)
+                .copied()
+                .ok_or_else(|| anyhow!("missing `{session_id}` messages"))?;
+
+            ordered_sessions.push(LoCoMoSessionRef {
+                session_number,
+                session_id,
+                start_time,
+                messages: session_messages,
+            });
+        }
+
+        Ok(ordered_sessions)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedSessionKeyKind {
+    Messages,
+    StartTime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedSessionKey {
+    session_number: usize,
+    kind: ParsedSessionKeyKind,
+}
+
+impl ParsedSessionKey {
+    fn parse(key: &str) -> anyhow::Result<Self> {
+        let suffix = "_date_time";
+        let (base, kind) = if let Some(base) = key.strip_suffix(suffix) {
+            (base, ParsedSessionKeyKind::StartTime)
+        } else {
+            (key, ParsedSessionKeyKind::Messages)
+        };
+
+        let number = base
+            .strip_prefix("session_")
+            .ok_or_else(|| anyhow!("unexpected conversation session key: `{key}`"))?
+            .parse::<usize>()
+            .with_context(|| format!("failed to parse session number from key `{key}`"))?;
+
+        Ok(Self {
+            session_number: number,
+            kind,
+        })
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let json_data = std::fs::read_to_string("data/locomo10.json")
         .context("failed to read LoCoMo dataset file: locomo10.json")?;
@@ -132,7 +230,77 @@ fn main() -> anyhow::Result<()> {
     for entry in dataset {
         println!("ID: {}", entry.sample_id);
         println!("Speaker A: {}", entry.conversation.speaker_a);
+        if let Some(first_session) = entry.conversation.ordered_sessions()?.first() {
+            println!("First Session ID: {}", first_session.session_id);
+            println!("First Session Date: {}", first_session.start_time);
+        }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(dia_id: &str) -> Message {
+        Message {
+            speaker: "A".to_string(),
+            text: "hello".to_string(),
+            dia_id: dia_id.to_string(),
+            img_url: None,
+            blip_caption: None,
+            query: None,
+            re_download: None,
+        }
+    }
+
+    #[test]
+    fn orders_sessions_by_numeric_session_id() {
+        let conversation = Conversation {
+            speaker_a: "A".to_string(),
+            speaker_b: "B".to_string(),
+            sessions: HashMap::from([
+                (
+                    "session_10".to_string(),
+                    SessionContent::Messages(vec![message("D10")]),
+                ),
+                (
+                    "session_10_date_time".to_string(),
+                    SessionContent::DateTime("2024-01-10 09:00".to_string()),
+                ),
+                (
+                    "session_2".to_string(),
+                    SessionContent::Messages(vec![message("D2")]),
+                ),
+                (
+                    "session_2_date_time".to_string(),
+                    SessionContent::DateTime("2024-01-02 09:00".to_string()),
+                ),
+            ]),
+        };
+
+        let ordered = conversation.ordered_sessions().unwrap();
+
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].session_number, 2);
+        assert_eq!(ordered[0].session_id, "session_2");
+        assert_eq!(ordered[1].session_number, 10);
+        assert_eq!(ordered[1].session_id, "session_10");
+    }
+
+    #[test]
+    fn fails_when_session_start_time_is_missing() {
+        let conversation = Conversation {
+            speaker_a: "A".to_string(),
+            speaker_b: "B".to_string(),
+            sessions: HashMap::from([(
+                "session_1".to_string(),
+                SessionContent::Messages(vec![message("D1")]),
+            )]),
+        };
+
+        let error = conversation.ordered_sessions().unwrap_err().to_string();
+        assert!(error.contains("missing `session_1_date_time`"));
+    }
 }

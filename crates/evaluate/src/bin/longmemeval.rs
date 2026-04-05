@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 
 /// LongMemEval データセット全体を表すルート構造です。
@@ -21,9 +21,30 @@ pub struct LongMemEvalEntry {
 }
 
 impl LongMemEvalEntry {
+    /// parallel array の長さが一致していることを検証します。
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let dates_len = self.haystack_dates.len();
+        let session_ids_len = self.haystack_session_ids.len();
+        let sessions_len = self.haystack_sessions.len();
+
+        ensure!(
+            dates_len == session_ids_len && session_ids_len == sessions_len,
+            "LongMemEval entry `{}` has mismatched haystack lengths: dates={}, session_ids={}, sessions={}",
+            self.question_id,
+            dates_len,
+            session_ids_len,
+            sessions_len,
+        );
+
+        Ok(())
+    }
+
     /// 日付、セッション ID、メッセージ列を同じ添字で束ねて扱いやすくします。
-    pub fn sessions(&self) -> impl Iterator<Item = LongMemEvalSessionRef<'_>> {
-        self.haystack_dates
+    pub fn sessions(&self) -> anyhow::Result<Vec<LongMemEvalSessionRef<'_>>> {
+        self.validate()?;
+
+        Ok(self
+            .haystack_dates
             .iter()
             .zip(self.haystack_session_ids.iter())
             .zip(self.haystack_sessions.iter())
@@ -32,6 +53,7 @@ impl LongMemEvalEntry {
                 session_id,
                 messages,
             })
+            .collect())
     }
 }
 
@@ -70,6 +92,7 @@ pub struct LongMemEvalSessionRef<'a> {
 pub struct LongMemEvalMessage {
     pub role: LongMemEvalRole,
     pub content: String,
+    pub has_answer: Option<bool>,
 }
 
 /// 発話ロールです。
@@ -83,23 +106,87 @@ pub enum LongMemEvalRole {
     Other(String),
 }
 
-fn main() -> anyhow::Result<()> {
-    let path = "data/longmemeval_s_cleaned.json";
+pub fn load_longmemeval_dataset(path: &str) -> anyhow::Result<LongMemEvalDataset> {
     let json_data = std::fs::read_to_string(path)
-        .context(format!("failed to read LongMemEval dataset file: {}", path))?;
+        .with_context(|| format!("failed to read LongMemEval dataset file: {path}"))?;
     let dataset: LongMemEvalDataset =
         serde_json::from_str(&json_data).context("failed to parse LongMemEval dataset JSON")?;
+
+    for entry in &dataset {
+        entry.validate().with_context(|| {
+            anyhow!(
+                "failed to validate LongMemEval dataset entry `{}` from `{path}`",
+                entry.question_id
+            )
+        })?;
+    }
+
+    Ok(dataset)
+}
+
+fn main() -> anyhow::Result<()> {
+    let path = "data/longmemeval_s_cleaned.json";
+    let dataset = load_longmemeval_dataset(path)?;
 
     for entry in &dataset {
         println!("Question ID: {}", entry.question_id);
         println!("Question Type: {}", entry.question_type);
         println!("Answer: {}", entry.answer.as_string());
 
-        if let Some(session) = entry.sessions().next() {
+        if let Some(session) = entry.sessions()?.first().copied() {
             println!("First Session ID: {}", session.session_id);
             println!("First Session Date: {}", session.date);
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(content: &str) -> LongMemEvalMessage {
+        LongMemEvalMessage {
+            role: LongMemEvalRole::User,
+            content: content.to_string(),
+            has_answer: None,
+        }
+    }
+
+    #[test]
+    fn validates_matching_parallel_arrays() {
+        let entry = LongMemEvalEntry {
+            question_id: "q1".to_string(),
+            question_type: "multi-session".to_string(),
+            question: "question".to_string(),
+            question_date: "2024-01-03".to_string(),
+            answer: LongMemEvalAnswer::Text("answer".to_string()),
+            answer_session_ids: vec!["s1".to_string()],
+            haystack_dates: vec!["2024-01-01".to_string()],
+            haystack_session_ids: vec!["s1".to_string()],
+            haystack_sessions: vec![vec![message("hello")]],
+        };
+
+        assert!(entry.validate().is_ok());
+        assert_eq!(entry.sessions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fails_fast_on_mismatched_parallel_arrays() {
+        let entry = LongMemEvalEntry {
+            question_id: "q1".to_string(),
+            question_type: "multi-session".to_string(),
+            question: "question".to_string(),
+            question_date: "2024-01-03".to_string(),
+            answer: LongMemEvalAnswer::Text("answer".to_string()),
+            answer_session_ids: vec!["s1".to_string()],
+            haystack_dates: vec!["2024-01-01".to_string()],
+            haystack_session_ids: vec!["s1".to_string(), "s2".to_string()],
+            haystack_sessions: vec![vec![message("hello")]],
+        };
+
+        let error = entry.validate().unwrap_err().to_string();
+        assert!(error.contains("mismatched haystack lengths"));
+    }
 }
