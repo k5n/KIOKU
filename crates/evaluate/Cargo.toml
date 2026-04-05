@@ -1,5 +1,5 @@
 [package]
-name = "evaluate"
+name = "kioku-evaluate"
 version.workspace = true
 edition.workspace = true
 

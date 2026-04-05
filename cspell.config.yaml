@@ -4,6 +4,7 @@ dictionaryDefinitions: []
 dictionaries: []
 words:
   - Agentic
+  - KIOKU
   - lancedb
   - locomo
   - longmemeval
@@ -11,6 +12,5 @@ words:
   - serde
   - sqlx
   - thiserror
-  - Zarigani
 ignoreWords: []
 import: []
