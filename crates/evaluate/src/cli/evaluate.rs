@@ -68,7 +68,7 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
                 judge: &judge,
                 budget,
             };
-            let result = pipeline.run(BenchmarkDataset::LoCoMo, &cases).await?;
+            let result = pipeline.run(&cases).await?;
             write_outputs(&cli.output_dir, &result)
         }
         (DatasetKind::Longmemeval, BackendKind::ReturnAll, AnswererKind::Debug) => {
@@ -82,7 +82,7 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
                 judge: &judge,
                 budget,
             };
-            let result = pipeline.run(BenchmarkDataset::LongMemEval, &cases).await?;
+            let result = pipeline.run(&cases).await?;
             write_outputs(&cli.output_dir, &result)
         }
     }

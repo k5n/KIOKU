@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -20,6 +20,7 @@ pub struct EvaluatePipeline<'a, B, A, J> {
     pub budget: RetrievalBudget,
 }
 
+#[derive(Debug)]
 pub struct EvaluatePipelineResult {
     pub answers: Vec<AnswerLogRecord>,
     pub retrievals: Vec<RetrievalLogRecord>,
@@ -32,11 +33,16 @@ where
     A: Answerer,
     J: Judge,
 {
-    pub async fn run(
-        &mut self,
-        dataset: BenchmarkDataset,
-        cases: &[BenchmarkCase],
-    ) -> anyhow::Result<EvaluatePipelineResult> {
+    pub async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
+        let dataset = cases
+            .first()
+            .map(|case| case.dataset)
+            .context("evaluate pipeline requires at least one case")?;
+        ensure!(
+            cases.iter().all(|case| case.dataset == dataset),
+            "evaluate pipeline requires all cases to use the same dataset"
+        );
+
         let mut answers = Vec::new();
         let mut retrievals = Vec::new();
         let mut question_judgements = Vec::new();
@@ -279,7 +285,9 @@ mod tests {
         adapt_longmemeval_entry,
     };
     use crate::judge::LongMemEvalJudge;
-    use crate::model::{BenchmarkDataset, RetrievalBudget};
+    use crate::model::{
+        BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant, RetrievalBudget,
+    };
 
     #[tokio::test]
     async fn pipeline_runs_end_to_end_and_writes_outputs() {
@@ -313,10 +321,7 @@ mod tests {
             },
         };
 
-        let result = pipeline
-            .run(BenchmarkDataset::LongMemEval, &[case])
-            .await
-            .unwrap();
+        let result = pipeline.run(&[case]).await.unwrap();
 
         assert_eq!(result.answers.len(), 1);
         assert!(result.answers[0].is_correct);
@@ -332,5 +337,79 @@ mod tests {
         assert!(temp_dir.join("retrieval.jsonl").exists());
         assert!(temp_dir.join("metrics.json").exists());
         std::fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pipeline_rejects_empty_cases() {
+        let mut backend = ReturnAllMemoryBackend::default();
+        let answerer = DebugAnswerer::default();
+        let judge = LongMemEvalJudge;
+
+        let mut pipeline = EvaluatePipeline {
+            backend: &mut backend,
+            answerer: &answerer,
+            judge: &judge,
+            budget: RetrievalBudget::default(),
+        };
+
+        let error = pipeline.run(&[]).await.unwrap_err().to_string();
+        assert!(error.contains("requires at least one case"));
+    }
+
+    #[tokio::test]
+    async fn pipeline_rejects_mixed_datasets() {
+        let longmemeval_entry = LongMemEvalEntry {
+            question_id: "q1".to_string(),
+            question_type: "multi-session".to_string(),
+            question: "Where?".to_string(),
+            question_date: "2024-01-03".to_string(),
+            answer: LongMemEvalAnswer::Text("answer".to_string()),
+            answer_session_ids: vec!["s1".to_string()],
+            haystack_dates: vec!["2024-01-01".to_string()],
+            haystack_session_ids: vec!["s1".to_string()],
+            haystack_sessions: vec![vec![LongMemEvalMessage {
+                role: LongMemEvalRole::User,
+                content: "hello".to_string(),
+                has_answer: Some(true),
+            }]],
+        };
+        let longmemeval_case = adapt_longmemeval_entry(&longmemeval_entry).unwrap();
+        let locomo_case = BenchmarkCase {
+            dataset: BenchmarkDataset::LoCoMo,
+            case_id: "locomo:sample-1".to_string(),
+            events: Vec::new(),
+            questions: vec![BenchmarkQuestion {
+                question_id: "locomo:sample-1:q0".to_string(),
+                question: "Where?".to_string(),
+                question_timestamp: None,
+                gold_answers: vec!["answer".to_string()],
+                evidence_event_ids: Vec::new(),
+                evidence_session_ids: Vec::new(),
+                category: Some(1),
+                question_type: None,
+                gold_answer_variant: GoldAnswerVariant::Default,
+                is_abstention: false,
+                metadata: serde_json::Value::Null,
+            }],
+            metadata: serde_json::Value::Null,
+        };
+
+        let mut backend = ReturnAllMemoryBackend::default();
+        let answerer = DebugAnswerer::default();
+        let judge = LongMemEvalJudge;
+
+        let mut pipeline = EvaluatePipeline {
+            backend: &mut backend,
+            answerer: &answerer,
+            judge: &judge,
+            budget: RetrievalBudget::default(),
+        };
+
+        let error = pipeline
+            .run(&[longmemeval_case, locomo_case])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("all cases to use the same dataset"));
     }
 }
