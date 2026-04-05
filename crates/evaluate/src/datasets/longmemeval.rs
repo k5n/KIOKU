@@ -117,19 +117,22 @@ pub fn load_longmemeval_dataset(path: &str) -> anyhow::Result<LongMemEvalDataset
 }
 
 pub fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<BenchmarkCase> {
-    let mut sessions = entry.sessions()?;
-    sessions.sort_by(|left, right| {
-        left.date
-            .cmp(right.date)
-            .then(left.session_id.cmp(right.session_id))
+    let mut sessions = entry
+        .sessions()?
+        .into_iter()
+        .map(|session| Ok((parse_longmemeval_date(session.date)?, session)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    sessions.sort_by(|(left_start, left_session), (right_start, right_session)| {
+        left_start
+            .cmp(right_start)
+            .then(left_session.session_id.cmp(right_session.session_id))
     });
 
     let case_id = format!("longmemeval:{}", entry.question_id);
     let mut events = Vec::new();
-    for session in &sessions {
-        let start = parse_longmemeval_date(session.date)?;
+    for (start, session) in &sessions {
         for (turn_idx, message) in session.messages.iter().enumerate() {
-            let timestamp = start + Duration::seconds((turn_idx * 30) as i64);
+            let timestamp = *start + Duration::seconds((turn_idx * 30) as i64);
             events.push(BenchmarkEvent {
                 event_id: format!(
                     "longmemeval:{}:{}:t{turn_idx}",
@@ -151,7 +154,7 @@ pub fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<Bench
 
     let evidence_event_ids = sessions
         .iter()
-        .flat_map(|session| {
+        .flat_map(|(_, session)| {
             session
                 .messages
                 .iter()
@@ -314,5 +317,32 @@ mod tests {
         );
         assert_eq!(case.events[0].stream_id, "s1");
         assert_eq!(case.events[1].stream_id, "s2");
+    }
+
+    #[test]
+    fn sorts_sessions_by_parsed_datetime_when_formats_are_mixed() {
+        let entry = LongMemEvalEntry {
+            question_id: "q2".to_string(),
+            question_type: "multi-session".to_string(),
+            question: "question".to_string(),
+            question_date: "2024-01-03".to_string(),
+            answer: LongMemEvalAnswer::Text("answer".to_string()),
+            answer_session_ids: vec!["s1".to_string()],
+            haystack_dates: vec![
+                "2024/01/02 (Tue) 09:00".to_string(),
+                "2024-01-01".to_string(),
+            ],
+            haystack_session_ids: vec!["s2".to_string(), "s1".to_string()],
+            haystack_sessions: vec![
+                vec![message("later", None)],
+                vec![message("earlier", Some(true))],
+            ],
+        };
+
+        let case = adapt_longmemeval_entry(&entry).unwrap();
+
+        assert_eq!(case.events[0].stream_id, "s1");
+        assert_eq!(case.events[1].stream_id, "s2");
+        assert!(case.events[0].timestamp < case.events[1].timestamp);
     }
 }
