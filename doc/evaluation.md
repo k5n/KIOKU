@@ -13,6 +13,12 @@
 特に重要なのは、**記憶層そのもの** と **回答生成 LLM** と **採点器** を分離することです。  
 比較対象は「どの記憶を返したか」であるべきなので、回答生成と採点はバックエンド間で固定する必要があります。
 
+ここでいう「バックエンド共通 I/F」は、KIOKU 本体のドメイン I/F を意味しません。  
+評価プログラムが `Add -> Search -> Answer -> Evaluate` を回すために必要な `MemoryBackend` は、`crates/evaluate` 側が持つ評価用 I/F と考えるのが自然です。
+
+`crates/core` は KIOKU というシステム自体のドメイン層、`crates/adapters/*` はそのインフラ層です。  
+将来 KIOKU を評価に載せるときは、`crates/evaluate` 側に `KiokuMemoryBackend` を実装して接続します。
+
 ## 2. 共通の評価フロー
 
 LoCoMo と LongMemEval はデータ構造が異なりますが、評価手順自体はかなり共通化できます。
