@@ -59,6 +59,8 @@ pub struct DatasetMetrics {
     pub scored_question_count: usize,
     pub overall_accuracy: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub adversarial_accuracy: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub abstention_accuracy: Option<f32>,
     pub average_retrieved_item_count: f32,
     #[serde(default)]

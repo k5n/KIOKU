@@ -155,6 +155,8 @@ fn build_metrics(
 
     let mut per_category_accuracy = BTreeMap::new();
     let mut per_type_accuracy = BTreeMap::new();
+    let mut adversarial_total = 0usize;
+    let mut adversarial_correct = 0usize;
     let mut abstention_total = 0usize;
     let mut abstention_correct = 0usize;
 
@@ -171,6 +173,13 @@ fn build_metrics(
             entry.total += 1;
             if judgement.is_correct {
                 entry.correct += 1;
+            }
+
+            if category == 5 {
+                adversarial_total += 1;
+                if judgement.is_correct {
+                    adversarial_correct += 1;
+                }
             }
         }
 
@@ -221,6 +230,8 @@ fn build_metrics(
             question_count: judgements.len(),
             scored_question_count: overall_total,
             overall_accuracy: ratio(overall_correct, overall_total),
+            adversarial_accuracy: (adversarial_total > 0)
+                .then(|| ratio(adversarial_correct, adversarial_total)),
             abstention_accuracy: (abstention_total > 0)
                 .then(|| ratio(abstention_correct, abstention_total)),
             average_retrieved_item_count,
@@ -466,5 +477,6 @@ mod tests {
         assert_eq!(result.metrics.metrics.question_count, 2);
         assert_eq!(result.metrics.metrics.scored_question_count, 1);
         assert_eq!(result.metrics.metrics.overall_accuracy, 1.0);
+        assert_eq!(result.metrics.metrics.adversarial_accuracy, Some(0.0));
     }
 }
