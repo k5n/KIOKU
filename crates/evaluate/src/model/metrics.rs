@@ -56,6 +56,7 @@ pub struct CategoryMetrics {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DatasetMetrics {
     pub question_count: usize,
+    pub scored_question_count: usize,
     pub overall_accuracy: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abstention_accuracy: Option<f32>,

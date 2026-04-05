@@ -219,6 +219,7 @@ fn build_metrics(
         },
         metrics: DatasetMetrics {
             question_count: judgements.len(),
+            scored_question_count: overall_total,
             overall_accuracy: ratio(overall_correct, overall_total),
             abstention_accuracy: (abstention_total > 0)
                 .then(|| ratio(abstention_correct, abstention_total)),
@@ -284,7 +285,7 @@ mod tests {
         LongMemEvalAnswer, LongMemEvalEntry, LongMemEvalMessage, LongMemEvalRole,
         adapt_longmemeval_entry,
     };
-    use crate::judge::LongMemEvalJudge;
+    use crate::judge::{LoCoMoJudge, LongMemEvalJudge};
     use crate::model::{
         BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant, RetrievalBudget,
     };
@@ -411,5 +412,59 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("all cases to use the same dataset"));
+    }
+
+    #[tokio::test]
+    async fn locomo_metrics_separate_total_and_scored_question_counts() {
+        let case = BenchmarkCase {
+            dataset: BenchmarkDataset::LoCoMo,
+            case_id: "locomo:sample-1".to_string(),
+            events: Vec::new(),
+            questions: vec![
+                BenchmarkQuestion {
+                    question_id: "locomo:sample-1:q0".to_string(),
+                    question: "Q1".to_string(),
+                    question_timestamp: None,
+                    gold_answers: vec!["answer".to_string()],
+                    evidence_event_ids: Vec::new(),
+                    evidence_session_ids: Vec::new(),
+                    category: Some(1),
+                    question_type: None,
+                    gold_answer_variant: GoldAnswerVariant::Default,
+                    is_abstention: false,
+                    metadata: serde_json::Value::Null,
+                },
+                BenchmarkQuestion {
+                    question_id: "locomo:sample-1:q1".to_string(),
+                    question: "Q2".to_string(),
+                    question_timestamp: None,
+                    gold_answers: vec!["different".to_string()],
+                    evidence_event_ids: Vec::new(),
+                    evidence_session_ids: Vec::new(),
+                    category: Some(5),
+                    question_type: None,
+                    gold_answer_variant: GoldAnswerVariant::Adversarial,
+                    is_abstention: false,
+                    metadata: serde_json::Value::Null,
+                },
+            ],
+            metadata: serde_json::Value::Null,
+        };
+        let mut backend = ReturnAllMemoryBackend::default();
+        let answerer = DebugAnswerer::new("answer");
+        let judge = LoCoMoJudge;
+
+        let mut pipeline = EvaluatePipeline {
+            backend: &mut backend,
+            answerer: &answerer,
+            judge: &judge,
+            budget: RetrievalBudget::default(),
+        };
+
+        let result = pipeline.run(&[case]).await.unwrap();
+
+        assert_eq!(result.metrics.metrics.question_count, 2);
+        assert_eq!(result.metrics.metrics.scored_question_count, 1);
+        assert_eq!(result.metrics.metrics.overall_accuracy, 1.0);
     }
 }
