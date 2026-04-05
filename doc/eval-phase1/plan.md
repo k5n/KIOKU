@@ -204,12 +204,13 @@ Phase 1 では回答品質は求めません。既定値は次のような fixed
 2. `ConversationEntry` から `BenchmarkCase` へ変換する adapter を作る
 3. `question_id` を `locomo:{sample_id}:q{idx}` で決定的に生成する
 4. `event_id` を `locomo:{sample_id}:event:{dia_id}` で決定的に生成する
-5. `session_X_date_time` と `session_X` のキーをパースし、各 session に開始日時とメッセージ列が 1:1 で存在することを検証する
-6. session を `session_X` の数値 ID で sort してから event を生成する
-7. turn ごとの疑似 timestamp を生成する
-8. loader / adapter test で、session 対応付けと timestamp の単調増加を固定する
-9. `evidence` の `dia_id` を同じ規則で `evidence_event_ids` に正規化する
-10. `category == 5` のとき `adversarial_answer` を優先できるよう保持する
+5. `session_X_date_time` と `session_X` のキーをパースし、`session_X` が存在する session については開始日時も存在することを検証する
+6. `session_X` を持たない orphan な `session_X_date_time` は、公式配布データ互換のため無視する
+7. session を `session_X` の数値 ID で sort してから event を生成する
+8. turn ごとの疑似 timestamp を生成する
+9. loader / adapter test で、session 対応付けと timestamp の単調増加を固定する
+10. `evidence` の `dia_id` を同じ規則で `evidence_event_ids` に正規化する
+11. `category == 5` のとき `adversarial_answer` を優先できるよう保持する
 
 ### 8.2 LongMemEval
 
@@ -405,7 +406,7 @@ Phase 1 で最低限入れるテストは次です。
 
 1. LoCoMo loader のデシリアライズ test
 2. LongMemEval loader のデシリアライズ test
-3. LoCoMo loader が `session_X` / `session_X_date_time` の 1:1 対応を検証し、session ID 順に sort する test
+3. LoCoMo loader が `session_X` に対する `session_X_date_time` の存在を検証し、orphan な `session_X_date_time` を無視した上で session ID 順に sort する test
 4. LoCoMo adapter が `BenchmarkCase` を正しく作り、timestamp を単調増加で作る test
 5. LongMemEval loader が parallel array の長さ不一致で fail-fast する test
 6. LongMemEval adapter が abstention / `has_answer` を保持する test
