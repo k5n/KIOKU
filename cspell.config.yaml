@@ -4,10 +4,12 @@ dictionaryDefinitions: []
 dictionaries: []
 words:
   - Agentic
+  - BLEU
   - KIOKU
   - lancedb
   - locomo
   - longmemeval
+  - ndcg
   - schemars
   - serde
   - sqlx
