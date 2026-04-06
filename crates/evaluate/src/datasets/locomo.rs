@@ -3,6 +3,7 @@ use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::model::{
     BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion, GoldAnswerVariant,
@@ -201,9 +202,9 @@ impl ParsedSessionKey {
     }
 }
 
-pub fn load_locomo_dataset(path: &str) -> anyhow::Result<LoCoMoDataset> {
+pub fn load_locomo_dataset(path: &Path) -> anyhow::Result<LoCoMoDataset> {
     let json_data = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read LoCoMo dataset file: {path}"))?;
+        .with_context(|| format!("failed to read LoCoMo dataset file: {}", path.display()))?;
     serde_json::from_str(&json_data).context("failed to parse LoCoMo dataset JSON")
 }
 

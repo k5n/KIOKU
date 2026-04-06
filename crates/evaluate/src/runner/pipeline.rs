@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::answerer::Answerer;
 use crate::backend::MemoryBackend;
+use crate::config::ResolvedRunMetadata;
 use crate::judge::{Judge, Judgement};
 use crate::model::{
     AnswerLogRecord, AnswerRequest, BenchmarkCase, BenchmarkDataset, CategoryMetrics,
@@ -255,13 +256,25 @@ fn ratio(correct: usize, total: usize) -> f32 {
     }
 }
 
-pub fn write_outputs(output_dir: &Path, result: &EvaluatePipelineResult) -> anyhow::Result<()> {
+pub fn write_outputs(
+    output_dir: &Path,
+    result: &EvaluatePipelineResult,
+    raw_config: &[u8],
+    resolved_run: &ResolvedRunMetadata,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(output_dir).with_context(|| {
         format!(
             "failed to create output directory `{}`",
             output_dir.display()
         )
     })?;
+    std::fs::write(output_dir.join("run.config.toml"), raw_config).with_context(|| {
+        format!(
+            "failed to write `{}`",
+            output_dir.join("run.config.toml").display()
+        )
+    })?;
+    write_json(output_dir.join("run.resolved.json"), resolved_run)?;
     write_jsonl(output_dir.join("answers.jsonl"), &result.answers)?;
     write_jsonl(output_dir.join("retrieval.jsonl"), &result.retrievals)?;
     write_json(output_dir.join("metrics.json"), &result.metrics)?;
@@ -292,6 +305,10 @@ mod tests {
     use super::{EvaluatePipeline, write_outputs};
     use crate::answerer::DebugAnswerer;
     use crate::backend::ReturnAllMemoryBackend;
+    use crate::config::{
+        AnswererKind, BackendKind, ResolvedAnswererMetadata, ResolvedBackendMetadata,
+        ResolvedRunMetadata,
+    };
     use crate::datasets::{
         LongMemEvalAnswer, LongMemEvalEntry, LongMemEvalMessage, LongMemEvalRole,
         adapt_longmemeval_entry,
@@ -344,10 +361,53 @@ mod tests {
         if temp_dir.exists() {
             std::fs::remove_dir_all(&temp_dir).unwrap();
         }
-        write_outputs(&temp_dir, &result).unwrap();
+        let resolved_run = ResolvedRunMetadata {
+            evaluate_version: env!("CARGO_PKG_VERSION"),
+            dataset: BenchmarkDataset::LongMemEval,
+            input: temp_dir.join("input.json"),
+            output_dir: temp_dir.clone(),
+            backend: ResolvedBackendMetadata {
+                kind: BackendKind::ReturnAll,
+            },
+            answerer: ResolvedAnswererMetadata {
+                kind: AnswererKind::Debug,
+                openai_compatible: None,
+            },
+            retrieval: RetrievalBudget {
+                max_items: Some(10),
+                max_tokens: None,
+            },
+        };
+        write_outputs(
+            &temp_dir,
+            &result,
+            br#"[run]
+dataset = "longmemeval"
+[answerer]
+kind = "debug"
+"#,
+            &resolved_run,
+        )
+        .unwrap();
+        let saved_config = std::fs::read(temp_dir.join("run.config.toml")).unwrap();
+        let answer_line = std::fs::read_to_string(temp_dir.join("answers.jsonl")).unwrap();
+        let answer_record: serde_json::Value =
+            serde_json::from_str(answer_line.lines().next().unwrap()).unwrap();
         assert!(temp_dir.join("answers.jsonl").exists());
         assert!(temp_dir.join("retrieval.jsonl").exists());
         assert!(temp_dir.join("metrics.json").exists());
+        assert!(temp_dir.join("run.config.toml").exists());
+        assert!(temp_dir.join("run.resolved.json").exists());
+        assert_eq!(
+            saved_config,
+            br#"[run]
+dataset = "longmemeval"
+[answerer]
+kind = "debug"
+"#
+        );
+        assert!(answer_record["answer_metadata"]["dataset"].is_null());
+        assert!(answer_record["answer_metadata"]["case_id"].is_null());
         std::fs::remove_dir_all(temp_dir).unwrap();
     }
 

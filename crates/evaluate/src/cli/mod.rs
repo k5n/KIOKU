@@ -1,3 +1,3 @@
 mod evaluate;
 
-pub use evaluate::{Cli, DatasetKind, run_cli};
+pub use evaluate::{Cli, run_cli};

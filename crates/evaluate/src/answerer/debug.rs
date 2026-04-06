@@ -32,10 +32,8 @@ impl Answerer for DebugAnswerer {
             metadata: serde_json::json!({
                 "answerer_kind": "debug",
                 "mode": "fixed",
-                "case_id": request.case.case_id,
                 "question_id": request.question.question_id,
                 "retrieved_count": request.retrieved.len(),
-                "dataset": request.dataset.as_str(),
             }),
         })
     }

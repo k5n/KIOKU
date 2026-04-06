@@ -2,6 +2,7 @@ use anyhow::{Context, anyhow, ensure};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::Path;
 
 use crate::model::{
     BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion, GoldAnswerVariant,
@@ -98,17 +99,22 @@ pub enum LongMemEvalRole {
     Other(String),
 }
 
-pub fn load_longmemeval_dataset(path: &str) -> anyhow::Result<LongMemEvalDataset> {
-    let json_data = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read LongMemEval dataset file: {path}"))?;
+pub fn load_longmemeval_dataset(path: &Path) -> anyhow::Result<LongMemEvalDataset> {
+    let json_data = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read LongMemEval dataset file: {}",
+            path.display()
+        )
+    })?;
     let dataset: LongMemEvalDataset =
         serde_json::from_str(&json_data).context("failed to parse LongMemEval dataset JSON")?;
 
     for entry in &dataset {
         entry.validate().with_context(|| {
             anyhow!(
-                "failed to validate LongMemEval dataset entry `{}` from `{path}`",
-                entry.question_id
+                "failed to validate LongMemEval dataset entry `{}` from `{}`",
+                entry.question_id,
+                path.display()
             )
         })?;
     }

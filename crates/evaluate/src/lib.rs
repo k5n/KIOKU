@@ -1,6 +1,7 @@
 pub mod answerer;
 pub mod backend;
 pub mod cli;
+pub mod config;
 pub mod datasets;
 pub mod judge;
 pub mod model;
