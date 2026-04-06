@@ -216,11 +216,17 @@ pub fn parse_config_file(path: impl AsRef<Path>) -> anyhow::Result<ParsedConfig>
 
 impl ParsedConfig {
     pub fn into_resolved(self) -> anyhow::Result<ResolvedConfig> {
-        let config_dir = self
-            .source_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let config_dir = absolute_path(
+            self.source_path
+                .parent()
+                .unwrap_or_else(|| Path::new(".")),
+        )
+        .with_context(|| {
+            format!(
+                "failed to resolve config directory for `{}`",
+                self.source_path.display()
+            )
+        })?;
         let source_path = std::fs::canonicalize(&self.source_path).with_context(|| {
             format!(
                 "failed to canonicalize config path `{}`",
@@ -384,9 +390,56 @@ fn validate_output_dir(output_dir: &Path) -> anyhow::Result<()> {
 
 fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
-        path.to_path_buf()
+        normalize_path(path)
     } else {
-        base_dir.join(path)
+        normalize_path(&base_dir.join(path))
+    }
+}
+
+fn absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(normalize_path(path))
+    } else {
+        Ok(normalize_path(&std::env::current_dir()?.join(path)))
+    }
+}
+
+// `std::fs::canonicalize` requires the path to exist and resolves symlinks,
+// while `std::path::absolute` may keep `..` segments on Unix. We still need a
+// lexical normalization step so run metadata records normalized absolute paths
+// even for not-yet-created output directories.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let can_pop = normalized
+                    .components()
+                    .next_back()
+                    .is_some_and(|last| !matches!(last, Component::RootDir | Component::Prefix(_)));
+
+                if can_pop {
+                    normalized.pop();
+                } else if !path.is_absolute() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        if path.is_absolute() {
+            PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+        } else {
+            PathBuf::from(".")
+        }
+    } else {
+        normalized
     }
 }
 
@@ -454,12 +507,12 @@ kind = "debug"
         );
 
         let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
-        let config_dir = path.parent().unwrap().to_path_buf();
+        let config_dir = std::env::current_dir().unwrap().join(path.parent().unwrap());
 
         assert_eq!(resolved.run.dataset.as_str(), "locomo");
         assert_eq!(resolved.source_path, std::fs::canonicalize(&path).unwrap());
-        assert_eq!(resolved.run.input, config_dir.join("../data/input.json"));
-        assert_eq!(resolved.run.output_dir, config_dir.join("./out"));
+        assert_eq!(resolved.run.input, config_dir.parent().unwrap().join("data/input.json"));
+        assert_eq!(resolved.run.output_dir, config_dir.join("out"));
     }
 
     #[cfg(unix)]
@@ -505,15 +558,41 @@ kind = "debug"
             .unwrap()
             .into_resolved()
             .unwrap();
+        let expected_link_dir = std::env::current_dir().unwrap().join(&link_dir);
 
         assert_eq!(
             resolved.source_path,
             std::fs::canonicalize(&real_path).unwrap()
         );
-        assert_eq!(resolved.run.input, link_dir.join("input.json"));
-        assert_eq!(resolved.run.output_dir, link_dir.join("out"));
+        assert_eq!(resolved.run.input, expected_link_dir.join("input.json"));
+        assert_eq!(resolved.run.output_dir, expected_link_dir.join("out"));
 
         std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[test]
+    fn normalizes_parent_segments_in_resolved_paths() {
+        let path = write_temp_config(
+            "normalize-parent-segments",
+            r#"
+[run]
+dataset = "locomo"
+input = "../data/./input.json"
+output_dir = "./nested/../out"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+"#,
+        );
+
+        let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
+        let config_dir = std::env::current_dir().unwrap().join(path.parent().unwrap());
+
+        assert_eq!(resolved.run.input, config_dir.parent().unwrap().join("data/input.json"));
+        assert_eq!(resolved.run.output_dir, config_dir.join("out"));
     }
 
     #[test]
