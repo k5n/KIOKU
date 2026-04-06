@@ -193,7 +193,7 @@ pub struct QueryOutput {
 
 `QueryInput.timestamp` は質問時点の参照時刻を表すためのものであり、ingest 済み event の cutoff 時刻としては扱いません。
 `QueryInput.budget` は answerer に渡す retrieval budget を表すためのものであり、backend 固有の検索パラメータを直接露出させません。
-Phase 1 の `ReturnAllMemoryBackend` では `max_items` のみを実装し、`max_tokens` は将来の backend 向け予約フィールドとします。Phase 1 の CLI では `--max-tokens` が指定された場合は明示的にエラーを返します。
+Phase 1 の `ReturnAllMemoryBackend` では `max_items` のみを実装し、`max_tokens` は将来の backend 向け予約フィールドとします。Phase 1.5 で導入する TOML 設定ファイルでは `max_tokens` を設定項目として保持できますが、Phase 1 系 backend では未対応のため明示的にエラーを返します。
 
 retrieval 指標のために、`source_event_id` と `source_session_id` は必ず持たせます。
 
@@ -394,6 +394,7 @@ runner は dataset に依らず次の順で動かします。
 - `judge_kind`
 - `metric_semantics_version`
 - `provisional`
+- `answer_metadata`
 
 ### 10.2 retrieval logs
 
@@ -434,11 +435,38 @@ Phase 1 の簡易 judge を使う段階では、同名メトリクスを最終 b
 
 特に LoCoMo の `overall accuracy` は `category 1-4` のみを分母とし、`category 5` は別枠で扱います。
 
+また、Phase 1.5 以降は実験設定を `answer_metadata` に重複保存せず、run manifest として別ファイル保存します。
+
+- `run.config.toml`
+  - ユーザが渡した元の設定ファイル
+- `run.resolved.json`
+  - 実際に使った解決済み設定
+  - 相対パス解決後の `input` / `output_dir`
+  - default 適用後の値
+  - 選択された `backend.kind` / `answerer.kind`
+  - retrieval budget
+
+`GeneratedAnswer.metadata` と `answers.jsonl.answer_metadata` は answerer 固有 metadata のみを保持し、run-level 設定は含めません。
+
+Phase 2 で `openai-compatible` answerer を導入したら、`run.resolved.json` と answerer 固有 metadata にはさらに次を追加します。
+
+- `model`
+- `base_url`
+- `temperature`
+- `max_output_tokens`
+- `timeout_secs`
+- `api_key_env`
+
+API key の実値はログへ残しません。
+
 ## 11. `crates/evaluate` の推奨モジュール分割
 
 ```text
 crates/evaluate/src/
 ├── lib.rs
+├── config/
+│   ├── mod.rs
+│   └── run.rs
 ├── backend/
 │   ├── mod.rs
 │   ├── traits.rs
@@ -458,7 +486,10 @@ crates/evaluate/src/
 │   └── pipeline.rs
 ├── answerer/
 │   ├── mod.rs
-│   └── llm.rs
+│   ├── debug.rs
+│   ├── llm.rs
+│   ├── prompt.rs
+│   └── rig_openai.rs
 ├── judge/
 │   ├── mod.rs
 │   ├── locomo.rs
@@ -481,7 +512,7 @@ crates/evaluate/src/
 ## 12. 段階的な実装順
 
 Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品質改善が混ざって進捗判定が曖昧になります。  
-そのため、最初の完了条件は **「stub で end-to-end を通すこと」** に限定し、LLM 統合は次フェーズへ分離します。
+そのため、最初の完了条件は **「stub で end-to-end を通すこと」** に限定し、その後に設定基盤を整理してから LLM 統合へ進めます。
 
 ### Phase 1: stub で runner を完走させる
 
@@ -498,6 +529,26 @@ Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品
 この段階で「全履歴を返すだけでベンチマークが最後まで回る」状態にします。  
 ここで得られる metrics は、比較用の最終スコアではなく **runner / adapter / logging の配線確認用** と位置付けます。
 
+### Phase 1.5: TOML 設定ファイルへ移行する
+
+次に、評価実行設定を CLI 引数直書きから TOML 設定ファイルへ移します。
+
+1. `RunConfig` を定義する
+2. dataset / input / output_dir / backend / answerer / budget を TOML で読めるようにする
+3. CLI は `--config <path>` のみを受けるようにする
+4. `api_key_env` を optional な設定項目として持てるようにする
+5. `run.config.toml` と `run.resolved.json` を保存できるようにする
+6. `GeneratedAnswer.metadata` と `answers.jsonl.answer_metadata` は answerer 固有 metadata のみにする
+
+この段階では再現性を優先し、設定は strict に扱います。
+
+- unknown field は parse error にする
+- 選択されていない kind の詳細設定 section は validate error にする
+- backend / answerer は `[backend.<kind>]` / `[answerer.<kind>]` 形式で kind ごとの詳細設定を持てるようにする
+
+この段階で LoCoMo / LongMemEval ごとに固定の設定ファイルを指定するだけで評価を実行できる状態にします。  
+設定値の部分上書きは CLI では行わず、設定の単一の truth source は TOML に置きます。
+
 ### Phase 2: LLM Answerer を導入する
 
 次に、回答生成を fixed 応答から実 LLM 呼び出しへ進めます。
@@ -506,8 +557,9 @@ Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品
 2. prompt builder を追加する
 3. `LlmBackedAnswerer` を実装する
 4. `rig-core` を使った OpenAI 互換 API 実装を追加する
-5. CLI から model / base URL / API key を指定できるようにする
-6. `DebugAnswerer` と LLM 実装を差し替えて動作確認する
+5. TOML 設定ファイルから model / base URL / API key env / timeout などを読めるようにする
+6. `api_key_env = None` のときは Authorization ヘッダなしで呼べるようにする
+7. `DebugAnswerer` と LLM 実装を差し替えて動作確認する
 
 ### Phase 3: retrieval 指標を入れる
 

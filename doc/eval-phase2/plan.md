@@ -2,7 +2,7 @@
 
 ## 1. 目的
 
-Phase 2 の目的は、Phase 1 で完成した共通 runner に **LLM を使う Answerer 実装を接続し、OpenAI 互換 API で回答生成を差し替え可能にすること** です。
+Phase 2 の目的は、Phase 1.5 で TOML ベースの設定実行へ移行した共通 runner に **LLM を使う Answerer 実装を接続し、OpenAI 互換 API で回答生成を差し替え可能にすること** です。
 
 この段階では retrieval 指標の精密化や official judge への準拠はまだ主目的ではありません。まずは次を成立させます。
 
@@ -10,7 +10,7 @@ Phase 2 の目的は、Phase 1 で完成した共通 runner に **LLM を使う 
 2. prompt builder を `Answerer` 実装から分離できる
 3. `LlmBackedAnswerer<T>` で `DebugAnswerer` と差し替え可能にできる
 4. `rig-core` を使って OpenAI 互換 API を呼べる
-5. CLI から `debug` と `openai-compatible` を切り替えられる
+5. TOML 設定ファイルから `debug` と `openai-compatible` を切り替えられる
 
 ## 2. Phase 2 の完了条件
 
@@ -18,22 +18,24 @@ Phase 2 の完了条件は次です。
 
 1. `LlmAnswerer` trait が定義されている
 2. `LlmGenerateRequest` / `LlmGenerateResponse` が定義されている
-3. prompt builder が dataset 非依存の共通部品として実装されている
+3. prompt builder が共通 core と dataset 別の拡張点を持つ形で実装されている
 4. `LlmBackedAnswerer<T>` が実装されている
 5. `RigOpenAiCompatibleLlmAnswerer` が実装されている
-6. CLI から `--answerer openai-compatible` を指定できる
-7. model / base URL / API key 周りの設定を CLI と env var から組み立てられる
+6. TOML 設定で `answerer.kind = "openai-compatible"` を指定できる
+7. model / base URL / API key 周りの設定を TOML と env var から組み立てられる
 8. `DebugAnswerer` と LLM 実装の差し替えを確認できる
+9. `answer_metadata` に解決済み実験設定を残せる
 
 ## 3. 前提整理
 
-### 3.1 runner は Phase 1 で完成している前提
+### 3.1 runner は Phase 1 で完成し、Phase 1.5 で設定基盤へ移行済み
 
 Phase 2 では runner の責務は増やしません。
 
 - runner が知るのは引き続き `Answerer` まで
 - LLM 呼び出しの詳細は `LlmAnswerer` 実装の内側へ閉じ込める
 - prompt 構築も runner に持ち込まない
+- 実行設定は Phase 1.5 で導入した TOML 設定構造体から受け取る
 
 ### 3.2 Phase 2 は回答生成の差し替えに集中する
 
@@ -66,6 +68,8 @@ Phase 2 では runner の責務は増やしません。
 - dataset ごとの差分を将来調整しやすくしたい
 - prompt を I/O 実装から分離したい
 
+Phase 2 の prompt builder は、完全に dataset 非依存な 1 本に固定せず、**共通 core と dataset 別の拡張点** を持つ形にします。
+
 最小の prompt 構成は次です。
 
 - system prompt:
@@ -78,12 +82,22 @@ Phase 2 では runner の責務は増やしません。
 
 few-shot はまだ不要です。
 
+ただし、将来の差分吸収のため次は参照できるようにします。
+
+- `dataset`
+- `question_type`
+- `is_abstention`
+- `category`
+
 ## 5. モジュール構成
 
-Phase 2 では Phase 1 の構成に次を追加します。
+Phase 2 では Phase 1.5 の構成に次を追加します。
 
 ```text
 crates/evaluate/src/
+├── config/
+│   ├── mod.rs
+│   └── run.rs
 ├── answerer/
 │   ├── mod.rs
 │   ├── traits.rs
@@ -93,7 +107,7 @@ crates/evaluate/src/
 │   └── rig_openai.rs
 ```
 
-Phase 1 からの差分は `answerer/llm.rs`, `answerer/prompt.rs`, `answerer/rig_openai.rs` が増えることです。
+Phase 1.5 からの差分は `answerer/llm.rs`, `answerer/prompt.rs`, `answerer/rig_openai.rs` が増えることです。
 
 ## 6. `LlmAnswerer` の I/F
 
@@ -119,9 +133,12 @@ pub trait LlmAnswerer {
 
 - `text: String`
 - `model_name: Option<String>`
+- `finish_reason: Option<String>`
 - `raw_response: Option<serde_json::Value>`
 
 この粒度に留める理由は、chat completion の詳細差分を抽象化し過ぎないためです。必要最小限に留めた方が `LlmBackedAnswerer` と `rig-core` 実装の両方を書きやすいです。
+
+また、空応答や content filter などで採点に回すべきでない失敗を識別できるよう、`LlmAnswerer` 実装は「有効な回答テキストが得られなかった場合に `Err` を返す」方針を採ります。
 
 ## 7. `Answerer` / `LlmAnswerer` の実装方針
 
@@ -133,7 +150,19 @@ pub trait LlmAnswerer {
 
 1. `BenchmarkQuestion` と `RetrievedMemory` 群から prompt を構築する
 2. 内部の `T: LlmAnswerer` に `generate` を依頼する
-3. `GeneratedAnswer` を返す
+3. 解決済み実験設定と LLM 応答 metadata を `GeneratedAnswer.metadata` に詰めて返す
+
+`GeneratedAnswer.metadata` には少なくとも次を残します。
+
+- `answerer_kind`
+- `model`
+- `base_url`
+- `temperature`
+- `max_output_tokens`
+- `timeout_secs`
+- `api_key_env`
+- `config_path`
+- `retrieved_count`
 
 つまり、実際の差し替え点は `LlmAnswerer` 実装であり、runner は常に `Answerer` しか見ません。
 
@@ -150,18 +179,26 @@ pub trait LlmAnswerer {
 - `max_output_tokens`
 - `timeout_secs`
 
-Phase 2 では env var から受ける構成で十分です。設定ファイル対応は後回しにします。
+これらは Phase 1.5 で導入した TOML 設定ファイルから受け取り、`api_key_env` は optional とします。
 
-## 8. CLI 実装計画
+- `api_key_env = Some(...)` のときだけ env var を解決する
+- `api_key_env = None` のときは Authorization ヘッダなしで呼ぶ
 
-Phase 2 では Phase 1 の CLI を拡張します。
+これにより OpenAI 系 API と、llama.cpp / Ollama のようなローカル OpenAI 互換 API を同じ I/F で扱えます。
 
-想定オプション:
+## 8. 設定ファイル実装計画
 
-- `--answerer debug|openai-compatible`
-- `--model <name>`: `openai-compatible` のときのみ利用
-- `--base-url <url>`: `openai-compatible` のときのみ利用
-- `--api-key-env <env>`: 既定は `OPENAI_API_KEY`
+Phase 2 では CLI 自体は Phase 1.5 の `--config <path>` のままとし、TOML の設定モデルだけを拡張します。
+
+想定する answerer 設定項目:
+
+- `answerer.kind = "debug" | "openai-compatible"`
+- `answerer.openai_compatible.base_url`
+- `answerer.openai_compatible.model`
+- `answerer.openai_compatible.api_key_env`
+- `answerer.openai_compatible.temperature`
+- `answerer.openai_compatible.max_output_tokens`
+- `answerer.openai_compatible.timeout_secs`
 
 ## 9. `rig-core` 導入計画
 
@@ -169,17 +206,15 @@ Phase 2 では Phase 1 の CLI を拡張します。
 
 `Cargo.toml` には既に `rig-core` が workspace dependency として定義されています。Phase 2 では `crates/evaluate/Cargo.toml` 側に依存追加します。
 
-合わせて必要になりそうなもの:
-
-- `tokio`
-- `async-trait`
+Phase 1 時点で `tokio` と `async-trait` は導入済みのため、Phase 2 で主に追加するのは `rig-core` と TOML 設定の補助依存です。
 
 ### 9.2 実装ステップ
 
 1. `RigOpenAiCompatibleConfig` を定義する
 2. `LlmAnswerer for RigOpenAiCompatibleLlmAnswerer` を実装する
-3. env var と CLI 引数から config を組み立てる
-4. 簡単な疎通テストを追加する
+3. TOML 設定と env var から config を組み立てる
+4. `api_key_env = None` の分岐を実装する
+5. 簡単な疎通テストを追加する
 
 ### 9.3 OpenAI 互換 API 実装で吸収する差分
 
@@ -196,13 +231,14 @@ runner や judge にこれらを漏らさないことが重要です。
 ## 10. 実装順序
 
 1. `crates/evaluate/Cargo.toml` に必要依存を追加
-2. prompt builder を実装
-3. `LlmAnswerer` trait を定義する
-4. `LlmBackedAnswerer` を実装する
-5. `RigOpenAiCompatibleLlmAnswerer` を実装
-6. CLI に `openai-compatible` answerer 設定を追加
-7. env var と base URL 指定で呼び出せるようにする
-8. `DebugAnswerer` と `rig-core` 実装の差し替えを確認する
+2. TOML 設定型に `openai-compatible` answerer 設定を追加
+3. prompt builder を実装
+4. `LlmAnswerer` trait を定義する
+5. `LlmBackedAnswerer` を実装する
+6. `RigOpenAiCompatibleLlmAnswerer` を実装
+7. TOML 設定と env var から config を解決できるようにする
+8. `GeneratedAnswer.metadata` に解決済み実験設定を残す
+9. `DebugAnswerer` と `rig-core` 実装の差し替えを確認する
 
 ## 11. テスト計画
 
@@ -211,6 +247,9 @@ Phase 2 で最低限入れるテストは次です。
 1. `LlmBackedAnswerer` の prompt-to-response test
 2. prompt builder の整形 test
 3. `RigOpenAiCompatibleLlmAnswerer` の config 組み立て test
+4. `api_key_env = None` を許容する test
+5. 空応答を error 扱いにする test
+6. `answer_metadata` に解決済み LLM 設定が載る test
 
 `rig-core` を使う実 API 呼び出しは unit test に閉じ込めず、環境変数があるときだけ走る integration test か、手動検証コマンドに寄せる方が扱いやすいです。
 
@@ -229,6 +268,20 @@ Phase 2 で最低限入れるテストは次です。
 
 - prompt builder を `answerer/` 配下に分離する
 - runner は `Answerer` に `AnswerRequest` を渡すだけに留める
+
+### 12.3 dataset 差分を無視した prompt になってしまうリスク
+
+対策:
+
+- prompt builder は共通 core と dataset 別の拡張点を持つ形にする
+- `dataset`, `question_type`, `is_abstention`, `category` を参照できるようにする
+
+### 12.4 LLM 呼び出し失敗を不正解として集計してしまうリスク
+
+対策:
+
+- 空応答や無効応答は `Err` として扱う
+- `answer_metadata` に finish reason や raw response を残せるようにする
 
 ## 13. Phase 2 完了後に着手するもの
 
