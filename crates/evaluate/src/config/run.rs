@@ -216,17 +216,13 @@ pub fn parse_config_file(path: impl AsRef<Path>) -> anyhow::Result<ParsedConfig>
 
 impl ParsedConfig {
     pub fn into_resolved(self) -> anyhow::Result<ResolvedConfig> {
-        let config_dir = absolute_path(
-            self.source_path
-                .parent()
-                .unwrap_or_else(|| Path::new(".")),
-        )
-        .with_context(|| {
-            format!(
-                "failed to resolve config directory for `{}`",
-                self.source_path.display()
-            )
-        })?;
+        let config_dir = absolute_path(self.source_path.parent().unwrap_or_else(|| Path::new(".")))
+            .with_context(|| {
+                format!(
+                    "failed to resolve config directory for `{}`",
+                    self.source_path.display()
+                )
+            })?;
         let source_path = std::fs::canonicalize(&self.source_path).with_context(|| {
             format!(
                 "failed to canonicalize config path `{}`",
@@ -507,11 +503,16 @@ kind = "debug"
         );
 
         let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
-        let config_dir = std::env::current_dir().unwrap().join(path.parent().unwrap());
+        let config_dir = std::env::current_dir()
+            .unwrap()
+            .join(path.parent().unwrap());
 
         assert_eq!(resolved.run.dataset.as_str(), "locomo");
         assert_eq!(resolved.source_path, std::fs::canonicalize(&path).unwrap());
-        assert_eq!(resolved.run.input, config_dir.parent().unwrap().join("data/input.json"));
+        assert_eq!(
+            resolved.run.input,
+            config_dir.parent().unwrap().join("data/input.json")
+        );
         assert_eq!(resolved.run.output_dir, config_dir.join("out"));
     }
 
@@ -589,9 +590,14 @@ kind = "debug"
         );
 
         let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
-        let config_dir = std::env::current_dir().unwrap().join(path.parent().unwrap());
+        let config_dir = std::env::current_dir()
+            .unwrap()
+            .join(path.parent().unwrap());
 
-        assert_eq!(resolved.run.input, config_dir.parent().unwrap().join("data/input.json"));
+        assert_eq!(
+            resolved.run.input,
+            config_dir.parent().unwrap().join("data/input.json")
+        );
         assert_eq!(resolved.run.output_dir, config_dir.join("out"));
     }
 

@@ -2,15 +2,15 @@ use anyhow::Context;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 
-use crate::answerer::DebugAnswerer;
-use crate::backend::ReturnAllMemoryBackend;
+use crate::answerer::{Answerer, DebugAnswerer};
+use crate::backend::{MemoryBackend, ReturnAllMemoryBackend};
 use crate::config::{AnswererConfig, BackendKind, parse_config_file};
 use crate::datasets::{
     adapt_locomo_entry, adapt_longmemeval_entry, load_locomo_dataset, load_longmemeval_dataset,
 };
-use crate::judge::{LoCoMoJudge, LongMemEvalJudge};
+use crate::judge::{Judge, LoCoMoJudge, LongMemEvalJudge};
 use crate::model::{BenchmarkCase, BenchmarkDataset};
-use crate::runner::{EvaluatePipeline, write_outputs};
+use crate::runner::{EvaluatePipeline, EvaluatePipelineResult, write_outputs};
 
 #[derive(Debug, Parser)]
 #[command(name = "evaluate")]
@@ -25,53 +25,39 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
         .validate()?;
     let run_metadata = validated.resolved_metadata()?;
     let run = validated.run.clone();
+    let cases = load_cases(run.dataset, &run.input)?;
+    let mut backend = build_backend(run.backend.kind)?;
+    let answerer = build_answerer(&run.answerer)?;
 
-    match (run.dataset, run.backend.kind, &run.answerer) {
-        (BenchmarkDataset::LoCoMo, BackendKind::ReturnAll, AnswererConfig::Debug) => {
-            let cases = load_cases(BenchmarkDataset::LoCoMo, &run.input)?;
-            let mut backend = ReturnAllMemoryBackend::default();
-            let answerer = DebugAnswerer::default();
-            let judge = LoCoMoJudge;
-            let mut pipeline = EvaluatePipeline {
-                backend: &mut backend,
-                answerer: &answerer,
-                judge: &judge,
-                budget: run.retrieval,
-            };
-            let result = pipeline.run(&cases).await?;
-            write_outputs(
-                &run.output_dir,
-                &result,
-                &validated.raw_bytes,
-                &run_metadata,
+    let result = match run.dataset {
+        BenchmarkDataset::LoCoMo => {
+            run_with_judge(
+                &cases,
+                &mut *backend,
+                &*answerer,
+                &LoCoMoJudge,
+                run.retrieval,
             )
+            .await?
         }
-        (BenchmarkDataset::LongMemEval, BackendKind::ReturnAll, AnswererConfig::Debug) => {
-            let cases = load_cases(BenchmarkDataset::LongMemEval, &run.input)?;
-            let mut backend = ReturnAllMemoryBackend::default();
-            let answerer = DebugAnswerer::default();
-            let judge = LongMemEvalJudge;
-            let mut pipeline = EvaluatePipeline {
-                backend: &mut backend,
-                answerer: &answerer,
-                judge: &judge,
-                budget: run.retrieval,
-            };
-            let result = pipeline.run(&cases).await?;
-            write_outputs(
-                &run.output_dir,
-                &result,
-                &validated.raw_bytes,
-                &run_metadata,
+        BenchmarkDataset::LongMemEval => {
+            run_with_judge(
+                &cases,
+                &mut *backend,
+                &*answerer,
+                &LongMemEvalJudge,
+                run.retrieval,
             )
+            .await?
         }
-        (dataset, backend, answerer) => Err(anyhow::anyhow!(
-            "unsupported run combination: dataset={}, backend={}, answerer={}",
-            dataset.as_str(),
-            backend.as_str(),
-            answerer.kind().as_str()
-        )),
-    }
+    };
+
+    write_outputs(
+        &run.output_dir,
+        &result,
+        &validated.raw_bytes,
+        &run_metadata,
+    )
 }
 
 fn load_cases(dataset: BenchmarkDataset, input: &Path) -> anyhow::Result<Vec<BenchmarkCase>> {
@@ -92,6 +78,45 @@ fn load_cases(dataset: BenchmarkDataset, input: &Path) -> anyhow::Result<Vec<Ben
                 )
             }),
     }
+}
+
+fn build_backend(kind: BackendKind) -> anyhow::Result<Box<dyn MemoryBackend>> {
+    match kind {
+        BackendKind::ReturnAll => Ok(Box::new(ReturnAllMemoryBackend::default())),
+        BackendKind::Oracle | BackendKind::Kioku => Err(anyhow::anyhow!(
+            "unsupported backend.kind: {}",
+            kind.as_str()
+        )),
+    }
+}
+
+fn build_answerer(config: &AnswererConfig) -> anyhow::Result<Box<dyn Answerer>> {
+    match config {
+        AnswererConfig::Debug => Ok(Box::new(DebugAnswerer::default())),
+        AnswererConfig::OpenAiCompatible(_) => Err(anyhow::anyhow!(
+            "unsupported answerer.kind: {}",
+            config.kind().as_str()
+        )),
+    }
+}
+
+async fn run_with_judge<J>(
+    cases: &[BenchmarkCase],
+    backend: &mut dyn MemoryBackend,
+    answerer: &dyn Answerer,
+    judge: &J,
+    budget: crate::model::RetrievalBudget,
+) -> anyhow::Result<EvaluatePipelineResult>
+where
+    J: Judge,
+{
+    let mut pipeline = EvaluatePipeline {
+        backend,
+        answerer,
+        judge,
+        budget,
+    };
+    pipeline.run(cases).await
 }
 
 #[cfg(test)]

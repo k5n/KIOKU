@@ -14,7 +14,7 @@ use crate::model::{
     RetrievalLogRecord,
 };
 
-pub struct EvaluatePipeline<'a, B, A, J> {
+pub struct EvaluatePipeline<'a, B: ?Sized, A: ?Sized, J> {
     pub backend: &'a mut B,
     pub answerer: &'a A,
     pub judge: &'a J,
@@ -30,8 +30,8 @@ pub struct EvaluatePipelineResult {
 
 impl<'a, B, A, J> EvaluatePipeline<'a, B, A, J>
 where
-    B: MemoryBackend,
-    A: Answerer,
+    B: MemoryBackend + ?Sized,
+    A: Answerer + ?Sized,
     J: Judge,
 {
     pub async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
