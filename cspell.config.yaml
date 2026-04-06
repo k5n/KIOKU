@@ -11,6 +11,7 @@ words:
   - locomo
   - longmemeval
   - ndcg
+  - Ollama
   - schemars
   - serde
   - sqlx

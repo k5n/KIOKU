@@ -448,7 +448,7 @@ Phase 1 の簡易 judge を使う段階では、同名メトリクスを最終 b
 
 `GeneratedAnswer.metadata` と `answers.jsonl.answer_metadata` は answerer 固有 metadata のみを保持し、run-level 設定は含めません。
 
-Phase 2 で `openai-compatible` answerer を導入したら、`run.resolved.json` と answerer 固有 metadata にはさらに次を追加します。
+Phase 2 で `openai-compatible` answerer を導入したら、`run.resolved.json` にはさらに次を追加します。
 
 - `model`
 - `base_url`
@@ -456,6 +456,16 @@ Phase 2 で `openai-compatible` answerer を導入したら、`run.resolved.json
 - `max_output_tokens`
 - `timeout_secs`
 - `api_key_env`
+- `max_retries`
+- `retry_backoff_ms`
+
+一方で、answerer 固有 metadata に追加してよいのは回答ごとに変わり得る値だけに限定します。例えば次です。
+
+- `request_id`
+- `finish_reason`
+- `usage`
+- `latency_ms`
+- `raw_response`
 
 API key の実値はログへ残しません。
 
@@ -557,11 +567,25 @@ Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品
 2. prompt builder を追加する
 3. `LlmBackedAnswerer` を実装する
 4. `rig-core` を使った OpenAI 互換 API 実装を追加する
-5. TOML 設定ファイルから model / base URL / API key env / timeout などを読めるようにする
+5. TOML 設定ファイルから model / base URL / API key env / timeout / max retry / retry backoff などを読めるようにする
 6. `api_key_env = None` のときは Authorization ヘッダなしで呼べるようにする
-7. `DebugAnswerer` と LLM 実装を差し替えて動作確認する
+7. 解決済みの OpenAI 互換設定と retry 設定を `run.resolved.json` に残せるようにする
+8. `DebugAnswerer` と LLM 実装を差し替えて動作確認する
 
-### Phase 3: retrieval 指標を入れる
+この段階では judge は Phase 1 の暫定実装を維持し、ここで得られる answer correctness は **配線確認用の暫定値** と位置付けます。  
+LoCoMo の F1 ベース評価や LongMemEval の official `evaluate_qa.py` / type-specific rubric への準拠は次の Phase で扱います。
+
+### Phase 3: benchmark-specific Judge を入れる
+
+次に、ベンチマーク比較に使うための judge を dataset ごとに整備します。
+
+1. LoCoMo の QA 評価を benchmark 仕様に寄せる
+2. LoCoMo の短答前提と F1 ベース採点へ移行する
+3. LongMemEval の official `evaluate_qa.py` 相当の判定を実装する
+4. LongMemEval の question type ごとの rubric を実装する
+5. `judge_kind` / `metric_semantics_version` を benchmark-specific な値へ更新する
+
+### Phase 4: retrieval 指標を入れる
 
 次に retrieval 側を評価可能にします。
 
@@ -570,7 +594,7 @@ Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品
 3. LongMemEval の turn-level 指標
 4. abstention を retrieval 集計から除外
 
-### Phase 4: 比較しやすい runner にする
+### Phase 5: 比較しやすい runner にする
 
 最後に実験基盤としての使い勝手を上げます。
 
