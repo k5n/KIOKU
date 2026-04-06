@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::answerer::DebugAnswerer;
 use crate::backend::ReturnAllMemoryBackend;
-use crate::config::{AnswererKind, BackendKind, parse_config_file};
+use crate::config::{AnswererConfig, BackendKind, parse_config_file};
 use crate::datasets::{
     adapt_locomo_entry, adapt_longmemeval_entry, load_locomo_dataset, load_longmemeval_dataset,
 };
@@ -26,8 +26,8 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
     let run_metadata = validated.resolved_metadata()?;
     let run = validated.run.clone();
 
-    match (run.dataset, run.backend.kind, run.answerer.kind) {
-        (BenchmarkDataset::LoCoMo, BackendKind::ReturnAll, AnswererKind::Debug) => {
+    match (run.dataset, run.backend.kind, &run.answerer) {
+        (BenchmarkDataset::LoCoMo, BackendKind::ReturnAll, AnswererConfig::Debug) => {
             let cases = load_cases(BenchmarkDataset::LoCoMo, &run.input)?;
             let mut backend = ReturnAllMemoryBackend::default();
             let answerer = DebugAnswerer::default();
@@ -46,7 +46,7 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
                 &run_metadata,
             )
         }
-        (BenchmarkDataset::LongMemEval, BackendKind::ReturnAll, AnswererKind::Debug) => {
+        (BenchmarkDataset::LongMemEval, BackendKind::ReturnAll, AnswererConfig::Debug) => {
             let cases = load_cases(BenchmarkDataset::LongMemEval, &run.input)?;
             let mut backend = ReturnAllMemoryBackend::default();
             let answerer = DebugAnswerer::default();
@@ -69,7 +69,7 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
             "unsupported run combination: dataset={}, backend={}, answerer={}",
             dataset.as_str(),
             backend.as_str(),
-            answerer.as_str()
+            answerer.kind().as_str()
         )),
     }
 }

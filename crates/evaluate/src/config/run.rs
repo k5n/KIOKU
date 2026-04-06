@@ -23,7 +23,6 @@ pub struct ResolvedConfig {
 pub struct ValidatedConfig {
     pub source_path: PathBuf,
     pub raw_bytes: Vec<u8>,
-    toml: TomlRunConfig,
     pub run: RunConfig,
 }
 
@@ -60,9 +59,19 @@ impl BackendKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnswererConfig {
-    pub kind: AnswererKind,
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnswererConfig {
+    Debug,
+    OpenAiCompatible(OpenAiCompatibleAnswererConfig),
+}
+
+impl AnswererConfig {
+    pub fn kind(&self) -> AnswererKind {
+        match self {
+            Self::Debug => AnswererKind::Debug,
+            Self::OpenAiCompatible(_) => AnswererKind::OpenAiCompatible,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +89,16 @@ impl AnswererKind {
             Self::OpenAiCompatible => "openai-compatible",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenAiCompatibleAnswererConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: Option<String>,
+    pub temperature: Option<f32>,
+    pub max_output_tokens: Option<u32>,
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -220,9 +239,7 @@ impl ParsedConfig {
             backend: BackendConfig {
                 kind: self.toml.backend.kind,
             },
-            answerer: AnswererConfig {
-                kind: self.toml.answerer.kind,
-            },
+            answerer: resolve_answerer_config(&self.toml.answerer)?,
             retrieval: RetrievalBudget {
                 max_items: retrieval.max_items,
                 max_tokens: retrieval.max_tokens,
@@ -251,7 +268,6 @@ impl ResolvedConfig {
         Ok(ValidatedConfig {
             source_path: self.source_path,
             raw_bytes: self.raw_bytes,
-            toml: self.toml,
             run: self.run,
         })
     }
@@ -259,30 +275,22 @@ impl ResolvedConfig {
 
 impl ValidatedConfig {
     pub fn resolved_metadata(&self) -> anyhow::Result<ResolvedRunMetadata> {
-        let answerer = match self.run.answerer.kind {
-            AnswererKind::Debug => ResolvedAnswererMetadata {
-                kind: self.run.answerer.kind,
+        let answerer = match &self.run.answerer {
+            AnswererConfig::Debug => ResolvedAnswererMetadata {
+                kind: self.run.answerer.kind(),
                 openai_compatible: None,
             },
-            AnswererKind::OpenAiCompatible => {
-                let openai = self
-                    .toml
-                    .answerer
-                    .openai_compatible
-                    .as_ref()
-                    .context("openai-compatible answerer config is missing")?;
-                ResolvedAnswererMetadata {
-                    kind: self.run.answerer.kind,
-                    openai_compatible: Some(ResolvedOpenAiCompatibleAnswererMetadata {
-                        base_url: openai.base_url.clone(),
-                        model: openai.model.clone(),
-                        api_key_env: openai.api_key_env.clone(),
-                        temperature: openai.temperature,
-                        max_output_tokens: openai.max_output_tokens,
-                        timeout_secs: openai.timeout_secs,
-                    }),
-                }
-            }
+            AnswererConfig::OpenAiCompatible(openai) => ResolvedAnswererMetadata {
+                kind: self.run.answerer.kind(),
+                openai_compatible: Some(ResolvedOpenAiCompatibleAnswererMetadata {
+                    base_url: openai.base_url.clone(),
+                    model: openai.model.clone(),
+                    api_key_env: openai.api_key_env.clone(),
+                    temperature: openai.temperature,
+                    max_output_tokens: openai.max_output_tokens,
+                    timeout_secs: openai.timeout_secs,
+                }),
+            },
         };
 
         Ok(ResolvedRunMetadata {
@@ -335,15 +343,15 @@ fn validate_backend(
 }
 
 fn validate_answerer(answerer: &AnswererConfig, source: &ResolvedConfig) -> anyhow::Result<()> {
-    match answerer.kind {
-        AnswererKind::Debug => {
+    match answerer {
+        AnswererConfig::Debug => {
             let _ = source.toml.answerer.debug.as_ref();
             ensure!(
                 source.toml.answerer.openai_compatible.is_none(),
                 "inactive answerer section `[answerer.openai_compatible]` is not allowed when answerer.kind = \"debug\""
             );
         }
-        AnswererKind::OpenAiCompatible => {
+        AnswererConfig::OpenAiCompatible(_) => {
             return Err(anyhow!(
                 "answerer.kind = \"openai-compatible\" is not supported in Phase 1.5"
             ));
@@ -382,11 +390,33 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn resolve_answerer_config(toml: &TomlAnswererSection) -> anyhow::Result<AnswererConfig> {
+    match toml.kind {
+        AnswererKind::Debug => Ok(AnswererConfig::Debug),
+        AnswererKind::OpenAiCompatible => {
+            let openai = toml
+                .openai_compatible
+                .as_ref()
+                .context("openai-compatible answerer config is missing")?;
+            Ok(AnswererConfig::OpenAiCompatible(
+                OpenAiCompatibleAnswererConfig {
+                    base_url: openai.base_url.clone(),
+                    model: openai.model.clone(),
+                    api_key_env: openai.api_key_env.clone(),
+                    temperature: openai.temperature,
+                    max_output_tokens: openai.max_output_tokens,
+                    timeout_secs: openai.timeout_secs,
+                },
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AnswererConfig, AnswererKind, BackendConfig, BackendKind, ResolvedAnswererMetadata,
-        ResolvedOpenAiCompatibleAnswererMetadata, parse_config_file,
+        AnswererConfig, AnswererKind, BackendConfig, BackendKind, OpenAiCompatibleAnswererConfig,
+        ResolvedAnswererMetadata, ResolvedOpenAiCompatibleAnswererMetadata, parse_config_file,
     };
     use crate::model::{BenchmarkDataset, RetrievalBudget};
     use std::path::PathBuf;
@@ -608,7 +638,17 @@ api_key_env = "OPENAI_API_KEY"
 
         let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
         assert_eq!(resolved.run.backend.kind, BackendKind::Oracle);
-        assert_eq!(resolved.run.answerer.kind, AnswererKind::OpenAiCompatible);
+        assert_eq!(
+            resolved.run.answerer,
+            AnswererConfig::OpenAiCompatible(OpenAiCompatibleAnswererConfig {
+                base_url: "http://localhost:11434/v1".to_string(),
+                model: "test".to_string(),
+                api_key_env: Some("OPENAI_API_KEY".to_string()),
+                temperature: None,
+                max_output_tokens: None,
+                timeout_secs: None,
+            })
+        );
 
         let error = resolved.validate().unwrap_err().to_string();
         assert!(error.contains("backend.kind = \"oracle\""));
@@ -670,7 +710,6 @@ model = "test"
         let validated = super::ValidatedConfig {
             source_path: std::fs::canonicalize(&parsed.source_path).unwrap(),
             raw_bytes: parsed.raw_bytes,
-            toml: parsed.toml,
             run: super::RunConfig {
                 dataset: BenchmarkDataset::LoCoMo,
                 input: PathBuf::from("/tmp/input.json"),
@@ -678,9 +717,14 @@ model = "test"
                 backend: BackendConfig {
                     kind: BackendKind::ReturnAll,
                 },
-                answerer: AnswererConfig {
-                    kind: AnswererKind::OpenAiCompatible,
-                },
+                answerer: AnswererConfig::OpenAiCompatible(OpenAiCompatibleAnswererConfig {
+                    base_url: "http://localhost:11434/v1".to_string(),
+                    model: "test".to_string(),
+                    api_key_env: None,
+                    temperature: None,
+                    max_output_tokens: None,
+                    timeout_secs: None,
+                }),
                 retrieval: RetrievalBudget::default(),
             },
         };
