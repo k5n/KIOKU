@@ -95,10 +95,12 @@ impl AnswererKind {
 pub struct OpenAiCompatibleAnswererConfig {
     pub base_url: String,
     pub model: String,
-    pub api_key_env: Option<String>,
-    pub temperature: Option<f32>,
-    pub max_output_tokens: Option<u32>,
-    pub timeout_secs: Option<u64>,
+    pub api_key_env: String,
+    pub temperature: f32,
+    pub max_output_tokens: u32,
+    pub timeout_secs: u64,
+    pub max_retries: u32,
+    pub retry_backoff_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -128,14 +130,12 @@ pub struct ResolvedAnswererMetadata {
 pub struct ResolvedOpenAiCompatibleAnswererMetadata {
     pub base_url: String,
     pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_secs: Option<u64>,
+    pub api_key_env: String,
+    pub temperature: f32,
+    pub max_output_tokens: u32,
+    pub timeout_secs: u64,
+    pub max_retries: u32,
+    pub retry_backoff_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -184,10 +184,12 @@ struct TomlAnswererSection {
 struct TomlOpenAiCompatibleSection {
     base_url: String,
     model: String,
-    api_key_env: Option<String>,
-    temperature: Option<f32>,
-    max_output_tokens: Option<u32>,
-    timeout_secs: Option<u64>,
+    api_key_env: String,
+    temperature: f32,
+    max_output_tokens: u32,
+    timeout_secs: u64,
+    max_retries: u32,
+    retry_backoff_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,6 +293,8 @@ impl ValidatedConfig {
                     temperature: openai.temperature,
                     max_output_tokens: openai.max_output_tokens,
                     timeout_secs: openai.timeout_secs,
+                    max_retries: openai.max_retries,
+                    retry_backoff_ms: openai.retry_backoff_ms,
                 }),
             },
         };
@@ -330,12 +334,12 @@ fn validate_backend(
             let _ = source.toml.backend.return_all.as_ref();
             ensure!(
                 retrieval.max_tokens.is_none(),
-                "max_tokens is not supported by return-all backend in Phase 1.5"
+                "max_tokens is not supported by return-all backend in Phase 2"
             );
         }
         BackendKind::Oracle | BackendKind::Kioku => {
             return Err(anyhow!(
-                "backend.kind = \"{}\" is not supported in Phase 1.5",
+                "backend.kind = \"{}\" is not supported in Phase 2",
                 backend.kind.as_str()
             ));
         }
@@ -353,10 +357,37 @@ fn validate_answerer(answerer: &AnswererConfig, source: &ResolvedConfig) -> anyh
                 "inactive answerer section `[answerer.openai_compatible]` is not allowed when answerer.kind = \"debug\""
             );
         }
-        AnswererConfig::OpenAiCompatible(_) => {
-            return Err(anyhow!(
-                "answerer.kind = \"openai-compatible\" is not supported in Phase 1.5"
-            ));
+        AnswererConfig::OpenAiCompatible(openai) => {
+            ensure!(
+                source.toml.answerer.debug.is_none(),
+                "inactive answerer section `[answerer.debug]` is not allowed when answerer.kind = \"openai-compatible\""
+            );
+            let _ = source
+                .toml
+                .answerer
+                .openai_compatible
+                .as_ref()
+                .context("openai-compatible answerer config is missing")?;
+            ensure!(
+                !openai.base_url.trim().is_empty(),
+                "answerer.openai_compatible.base_url must not be empty"
+            );
+            ensure!(
+                !openai.model.trim().is_empty(),
+                "answerer.openai_compatible.model must not be empty"
+            );
+            ensure!(
+                !openai.api_key_env.trim().is_empty(),
+                "answerer.openai_compatible.api_key_env must not be empty"
+            );
+            ensure!(
+                openai.timeout_secs > 0,
+                "answerer.openai_compatible.timeout_secs must be greater than 0"
+            );
+            ensure!(
+                openai.max_output_tokens > 0,
+                "answerer.openai_compatible.max_output_tokens must be greater than 0"
+            );
         }
     }
 
@@ -455,6 +486,8 @@ fn resolve_answerer_config(toml: &TomlAnswererSection) -> anyhow::Result<Answere
                     temperature: openai.temperature,
                     max_output_tokens: openai.max_output_tokens,
                     timeout_secs: openai.timeout_secs,
+                    max_retries: openai.max_retries,
+                    retry_backoff_ms: openai.retry_backoff_ms,
                 },
             ))
         }
@@ -464,10 +497,9 @@ fn resolve_answerer_config(toml: &TomlAnswererSection) -> anyhow::Result<Answere
 #[cfg(test)]
 mod tests {
     use super::{
-        AnswererConfig, AnswererKind, BackendConfig, BackendKind, OpenAiCompatibleAnswererConfig,
+        AnswererConfig, AnswererKind, BackendKind, OpenAiCompatibleAnswererConfig,
         ResolvedAnswererMetadata, ResolvedOpenAiCompatibleAnswererMetadata, parse_config_file,
     };
-    use crate::model::{BenchmarkDataset, RetrievalBudget};
     use std::path::PathBuf;
 
     fn write_temp_config(name: &str, body: &str) -> PathBuf {
@@ -644,6 +676,12 @@ kind = "debug"
 [answerer.openai_compatible]
 base_url = "http://localhost:11434/v1"
 model = "test"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.2
+max_output_tokens = 128
+timeout_secs = 30
+max_retries = 2
+retry_backoff_ms = 100
 "#,
         );
 
@@ -718,6 +756,11 @@ kind = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 model = "test"
 api_key_env = "OPENAI_API_KEY"
+temperature = 0.2
+max_output_tokens = 128
+timeout_secs = 30
+max_retries = 2
+retry_backoff_ms = 100
 "#,
         );
 
@@ -728,10 +771,12 @@ api_key_env = "OPENAI_API_KEY"
             AnswererConfig::OpenAiCompatible(OpenAiCompatibleAnswererConfig {
                 base_url: "http://localhost:11434/v1".to_string(),
                 model: "test".to_string(),
-                api_key_env: Some("OPENAI_API_KEY".to_string()),
-                temperature: None,
-                max_output_tokens: None,
-                timeout_secs: None,
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                temperature: 0.2,
+                max_output_tokens: 128,
+                timeout_secs: 30,
+                max_retries: 2,
+                retry_backoff_ms: 100,
             })
         );
 
@@ -770,9 +815,9 @@ kind = "debug"
     }
 
     #[test]
-    fn resolved_metadata_allows_missing_api_key_env() {
+    fn resolved_metadata_includes_openai_retry_settings() {
         let path = write_temp_config(
-            "resolved-api-key-none",
+            "resolved-openai-metadata",
             r#"
 [run]
 dataset = "locomo"
@@ -788,31 +833,21 @@ kind = "openai-compatible"
 [answerer.openai_compatible]
 base_url = "http://localhost:11434/v1"
 model = "test"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 256
+timeout_secs = 45
+max_retries = 3
+retry_backoff_ms = 250
 "#,
         );
 
-        let parsed = parse_config_file(path).unwrap();
-        let validated = super::ValidatedConfig {
-            source_path: std::fs::canonicalize(&parsed.source_path).unwrap(),
-            raw_bytes: parsed.raw_bytes,
-            run: super::RunConfig {
-                dataset: BenchmarkDataset::LoCoMo,
-                input: PathBuf::from("/tmp/input.json"),
-                output_dir: PathBuf::from("/tmp/out"),
-                backend: BackendConfig {
-                    kind: BackendKind::ReturnAll,
-                },
-                answerer: AnswererConfig::OpenAiCompatible(OpenAiCompatibleAnswererConfig {
-                    base_url: "http://localhost:11434/v1".to_string(),
-                    model: "test".to_string(),
-                    api_key_env: None,
-                    temperature: None,
-                    max_output_tokens: None,
-                    timeout_secs: None,
-                }),
-                retrieval: RetrievalBudget::default(),
-            },
-        };
+        let validated = parse_config_file(path)
+            .unwrap()
+            .into_resolved()
+            .unwrap()
+            .validate()
+            .unwrap();
         let metadata = validated.resolved_metadata().unwrap();
 
         assert_eq!(
@@ -822,10 +857,12 @@ model = "test"
                 openai_compatible: Some(ResolvedOpenAiCompatibleAnswererMetadata {
                     base_url: "http://localhost:11434/v1".to_string(),
                     model: "test".to_string(),
-                    api_key_env: None,
-                    temperature: None,
-                    max_output_tokens: None,
-                    timeout_secs: None,
+                    api_key_env: "OPENAI_API_KEY".to_string(),
+                    temperature: 0.0,
+                    max_output_tokens: 256,
+                    timeout_secs: 45,
+                    max_retries: 3,
+                    retry_backoff_ms: 250,
                 }),
             }
         );

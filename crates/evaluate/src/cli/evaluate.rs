@@ -2,7 +2,10 @@ use anyhow::Context;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 
-use crate::answerer::{Answerer, DebugAnswerer};
+use crate::answerer::{
+    Answerer, DebugAnswerer, LlmBackedAnswerer, LlmBackedAnswererConfig,
+    RigOpenAiCompatibleLlmAnswerer,
+};
 use crate::backend::{MemoryBackend, ReturnAllMemoryBackend};
 use crate::config::{AnswererConfig, BackendKind, parse_config_file};
 use crate::datasets::{
@@ -93,10 +96,17 @@ fn build_backend(kind: BackendKind) -> anyhow::Result<Box<dyn MemoryBackend>> {
 fn build_answerer(config: &AnswererConfig) -> anyhow::Result<Box<dyn Answerer>> {
     match config {
         AnswererConfig::Debug => Ok(Box::new(DebugAnswerer::default())),
-        AnswererConfig::OpenAiCompatible(_) => Err(anyhow::anyhow!(
-            "unsupported answerer.kind: {}",
-            config.kind().as_str()
-        )),
+        AnswererConfig::OpenAiCompatible(openai) => {
+            let llm = RigOpenAiCompatibleLlmAnswerer::from_answerer_config(openai)?;
+            Ok(Box::new(LlmBackedAnswerer::new(
+                LlmBackedAnswererConfig {
+                    answerer_kind: config.kind().as_str(),
+                    temperature: Some(openai.temperature),
+                    max_output_tokens: Some(openai.max_output_tokens),
+                },
+                llm,
+            )))
+        }
     }
 }
 
@@ -121,9 +131,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{Cli, build_answerer};
     use clap::Parser;
     use std::path::PathBuf;
+
+    use crate::config::{AnswererConfig, OpenAiCompatibleAnswererConfig};
 
     #[test]
     fn cli_requires_config_argument() {
@@ -136,5 +148,25 @@ mod tests {
     fn cli_accepts_only_config_argument() {
         let cli = Cli::try_parse_from(["evaluate", "--config", "configs/run.toml"]).unwrap();
         assert_eq!(cli.config, PathBuf::from("configs/run.toml"));
+    }
+
+    #[test]
+    fn build_answerer_supports_debug_and_openai_compatible_configs() {
+        let debug = build_answerer(&AnswererConfig::Debug);
+        assert!(debug.is_ok());
+
+        let openai = build_answerer(&AnswererConfig::OpenAiCompatible(
+            OpenAiCompatibleAnswererConfig {
+                base_url: "http://localhost:11434/v1".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: "KIOKU_TEST_OPENAI_API_KEY".to_string(),
+                temperature: 0.2,
+                max_output_tokens: 128,
+                timeout_secs: 30,
+                max_retries: 2,
+                retry_backoff_ms: 10,
+            },
+        ));
+        assert!(openai.is_ok());
     }
 }
