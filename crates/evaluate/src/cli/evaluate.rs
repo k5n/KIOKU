@@ -13,6 +13,7 @@ use crate::datasets::{
 };
 use crate::judge::{Judge, LoCoMoJudge, LongMemEvalJudge};
 use crate::model::{BenchmarkCase, BenchmarkDataset};
+use crate::prompt::{DefaultPromptBuilder, PromptBuilder};
 use crate::runner::{EvaluatePipeline, EvaluatePipelineResult, write_outputs};
 
 #[derive(Debug, Parser)]
@@ -30,6 +31,7 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
     let run = validated.run.clone();
     let cases = load_cases(run.dataset, &run.input)?;
     let mut backend = build_backend(run.backend.kind)?;
+    let prompt_builder = DefaultPromptBuilder;
     let answerer = build_answerer(&run.answerer)?;
 
     let result = match run.dataset {
@@ -37,9 +39,11 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
             run_with_judge(
                 &cases,
                 &mut *backend,
+                &prompt_builder,
                 &*answerer,
                 &LoCoMoJudge,
                 run.retrieval,
+                run.prompt,
             )
             .await?
         }
@@ -47,9 +51,11 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
             run_with_judge(
                 &cases,
                 &mut *backend,
+                &prompt_builder,
                 &*answerer,
                 &LongMemEvalJudge,
                 run.retrieval,
+                run.prompt,
             )
             .await?
         }
@@ -113,18 +119,22 @@ fn build_answerer(config: &AnswererConfig) -> anyhow::Result<Box<dyn Answerer>> 
 async fn run_with_judge<J>(
     cases: &[BenchmarkCase],
     backend: &mut dyn MemoryBackend,
+    prompt_builder: &dyn PromptBuilder,
     answerer: &dyn Answerer,
     judge: &J,
     budget: crate::model::RetrievalBudget,
+    prompt_config: crate::config::PromptConfig,
 ) -> anyhow::Result<EvaluatePipelineResult>
 where
     J: Judge,
 {
     let mut pipeline = EvaluatePipeline {
         backend,
+        prompt_builder,
         answerer,
         judge,
         budget,
+        prompt_config,
     };
     pipeline.run(cases).await
 }

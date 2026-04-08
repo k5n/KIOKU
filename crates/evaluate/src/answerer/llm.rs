@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::time::Instant;
 
-use super::prompt::build_llm_prompt;
 use crate::answerer::Answerer;
 use crate::model::{AnswerRequest, GeneratedAnswer};
 
@@ -67,16 +66,15 @@ where
     T: LlmAnswerer,
 {
     async fn answer(&self, request: AnswerRequest<'_>) -> anyhow::Result<GeneratedAnswer> {
-        let prompt = build_llm_prompt(request);
         let started_at = Instant::now();
         let response = self
             .llm
             .generate(LlmGenerateRequest {
-                system_prompt: prompt.system_prompt.as_deref(),
-                user_prompt: &prompt.user_prompt,
+                system_prompt: request.prompt.system_prompt.as_deref(),
+                user_prompt: &request.prompt.user_prompt,
                 temperature: self.config.temperature,
                 max_output_tokens: self.config.max_output_tokens,
-                metadata: &prompt.metadata,
+                metadata: &request.prompt.metadata,
             })
             .await?;
 
@@ -84,34 +82,35 @@ where
         ensure!(!text.is_empty(), "LLM answerer returned an empty response");
 
         let mut metadata = Map::new();
+        metadata.insert("prompt".to_string(), request.prompt.prompt_metadata());
         metadata.insert(
-            "answerer_kind".to_string(),
-            Value::String(self.config.answerer_kind.to_string()),
+            "answerer".to_string(),
+            serde_json::json!({
+                "kind": self.config.answerer_kind,
+            }),
         );
-        metadata.insert(
-            "retrieved_count".to_string(),
-            Value::from(request.retrieved.len() as u64),
-        );
-        metadata.insert(
+        let mut llm_metadata = Map::new();
+        llm_metadata.insert(
             "latency_ms".to_string(),
             Value::from(started_at.elapsed().as_millis() as u64),
         );
 
         if let Some(response_id) = response.response_id {
-            metadata.insert("response_id".to_string(), Value::String(response_id));
+            llm_metadata.insert("response_id".to_string(), Value::String(response_id));
         }
         if let Some(model_name) = response.model_name {
-            metadata.insert("model_name".to_string(), Value::String(model_name));
+            llm_metadata.insert("model_name".to_string(), Value::String(model_name));
         }
         if let Some(finish_reason) = response.finish_reason {
-            metadata.insert("finish_reason".to_string(), Value::String(finish_reason));
+            llm_metadata.insert("finish_reason".to_string(), Value::String(finish_reason));
         }
         if let Some(usage) = response.usage {
-            metadata.insert("usage".to_string(), serde_json::to_value(usage)?);
+            llm_metadata.insert("usage".to_string(), serde_json::to_value(usage)?);
         }
         if let Some(raw_response) = response.raw_response {
-            metadata.insert("raw_response".to_string(), raw_response);
+            llm_metadata.insert("raw_response".to_string(), raw_response);
         }
+        metadata.insert("llm".to_string(), Value::Object(llm_metadata));
 
         Ok(GeneratedAnswer {
             text,
@@ -127,10 +126,8 @@ mod tests {
         LlmGenerateResponse, LlmUsage,
     };
     use crate::answerer::Answerer;
-    use crate::model::{
-        AnswerRequest, BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant,
-        RetrievedMemory,
-    };
+    use crate::model::AnswerRequest;
+    use crate::prompt::PreparedPrompt;
     use anyhow::{Result, anyhow};
     use async_trait::async_trait;
     use std::collections::VecDeque;
@@ -213,23 +210,24 @@ mod tests {
         let generated = answerer.answer(request).await.unwrap();
 
         assert_eq!(generated.text, "Kyoto");
-        assert_eq!(generated.metadata["answerer_kind"], "openai-compatible");
-        assert_eq!(generated.metadata["retrieved_count"], 1);
-        assert_eq!(generated.metadata["model_name"], "test-model");
-        assert_eq!(generated.metadata["response_id"], "resp-1");
-        assert_eq!(generated.metadata["finish_reason"], "stop");
-        assert_eq!(generated.metadata["usage"]["total_tokens"], 16);
-        assert!(generated.metadata["latency_ms"].as_u64().is_some());
-        assert!(generated.metadata.get("model").is_none());
-        assert!(generated.metadata.get("base_url").is_none());
+        assert_eq!(generated.metadata["answerer"]["kind"], "openai-compatible");
+        assert_eq!(generated.metadata["llm"]["model_name"], "test-model");
+        assert_eq!(generated.metadata["llm"]["response_id"], "resp-1");
+        assert_eq!(generated.metadata["llm"]["finish_reason"], "stop");
+        assert_eq!(generated.metadata["llm"]["usage"]["total_tokens"], 16);
+        assert!(generated.metadata["llm"]["latency_ms"].as_u64().is_some());
+        assert_eq!(
+            generated.metadata["prompt"]["template_id"],
+            "longmemeval.answer.history_chats.v1"
+        );
 
         let requests = llm.captured_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].temperature, Some(0.2));
         assert_eq!(requests[0].max_output_tokens, Some(64));
-        assert_eq!(requests[0].metadata["dataset"], "longmemeval");
-        assert!(requests[0].user_prompt.contains("Retrieved Memories:"));
-        assert!(requests[0].system_prompt.is_some());
+        assert_eq!(requests[0].metadata["requested_profile"], "history-chats");
+        assert!(requests[0].user_prompt.contains("History Chats:"));
+        assert!(requests[0].system_prompt.is_none());
     }
 
     #[tokio::test]
@@ -259,41 +257,24 @@ mod tests {
     }
 
     fn sample_request() -> AnswerRequest<'static> {
-        let case = Box::leak(Box::new(BenchmarkCase {
-            dataset: BenchmarkDataset::LongMemEval,
-            case_id: "longmemeval:q1".to_string(),
-            events: Vec::new(),
-            questions: Vec::new(),
-            metadata: serde_json::Value::Null,
+        let prompt = Box::leak(Box::new(PreparedPrompt {
+            system_prompt: None,
+            user_prompt: concat!(
+                "I will give you several history chats between you and a user. ",
+                "Please answer the question based on the relevant chat history.\n\n\n",
+                "History Chats:\n\n### Session 1:\nSession Date: 2024-01-01\n",
+                "Session Content:\nuser: The user said they moved to Kyoto last month.\n\n",
+                "Current Date: 2024-01-03\nQuestion: Where does the user live now?\nAnswer:"
+            )
+            .to_string(),
+            template_id: "longmemeval.answer.history_chats.v1".to_string(),
+            metadata: serde_json::json!({
+                "requested_profile": "history-chats",
+                "resolved_profile": "history-chats",
+                "context_kind": "HistoryChats",
+            }),
         }));
-        let question = Box::leak(Box::new(BenchmarkQuestion {
-            question_id: "longmemeval:q1:q0".to_string(),
-            question: "Where does the user live now?".to_string(),
-            question_timestamp: None,
-            gold_answers: vec!["Kyoto".to_string()],
-            evidence_event_ids: Vec::new(),
-            evidence_session_ids: Vec::new(),
-            category: Some(4),
-            question_type: Some("multi-session".to_string()),
-            gold_answer_variant: GoldAnswerVariant::Default,
-            is_abstention: false,
-            metadata: serde_json::Value::Null,
-        }));
-        let retrieved = Box::leak(Box::new(vec![RetrievedMemory {
-            event_id: "event-1".to_string(),
-            stream_id: "session-1".to_string(),
-            timestamp: "2024-01-01T10:00:00Z".to_string(),
-            content: "The user said they moved to Kyoto last month.".to_string(),
-            speaker_id: Some("user".to_string()),
-            speaker_name: Some("User".to_string()),
-            metadata: serde_json::Value::Null,
-        }]));
 
-        AnswerRequest {
-            dataset: BenchmarkDataset::LongMemEval,
-            case,
-            question,
-            retrieved,
-        }
+        AnswerRequest { prompt }
     }
 }

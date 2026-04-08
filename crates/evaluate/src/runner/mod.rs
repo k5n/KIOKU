@@ -1,3 +1,6 @@
+mod metrics;
+mod output;
 mod pipeline;
 
-pub use pipeline::{EvaluatePipeline, EvaluatePipelineResult, write_outputs};
+pub use output::write_outputs;
+pub use pipeline::{EvaluatePipeline, EvaluatePipelineResult};

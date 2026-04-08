@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::prompt::{LongMemEvalAnswerPromptProfile, PromptContext};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RetrievalBudget {
     pub max_items: Option<usize>,
@@ -15,12 +17,16 @@ pub struct QueryInput {
     pub timestamp: Option<String>,
     pub budget: RetrievalBudget,
     #[serde(default)]
+    pub requested_longmemeval_prompt_profile: Option<LongMemEvalAnswerPromptProfile>,
+    #[serde(default)]
     pub metadata: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryOutput {
     pub retrieved: Vec<RetrievedMemory>,
+    #[serde(default)]
+    pub prompt_context: Option<PromptContext>,
     #[serde(default)]
     pub metadata: Value,
 }

@@ -5,4 +5,5 @@ pub mod config;
 pub mod datasets;
 pub mod judge;
 pub mod model;
+pub mod prompt;
 pub mod runner;

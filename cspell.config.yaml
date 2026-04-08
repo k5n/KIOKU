@@ -6,12 +6,15 @@ words:
   - Agentic
   - BLEU
   - chrono
+  - Deque
+  - judgements
   - KIOKU
   - lancedb
   - locomo
   - longmemeval
   - ndcg
   - Ollama
+  - replacen
   - schemars
   - serde
   - sqlx

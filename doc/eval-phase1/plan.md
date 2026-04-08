@@ -267,7 +267,7 @@ pub struct ReturnAllMemoryBackend {
 - `speaker_name`
 - `metadata`
 
-`query` は、取り込み済み event を timestamp 順に `RetrievedMemory` に変換して返します。`budget.max_items` が指定された場合は、時系列で新しい N 件だけを選び、返却順は時系列昇順に保ちます。`budget.max_tokens` は Phase 1 の `ReturnAllMemoryBackend` では未対応であり、CLI で指定された場合は明示的にエラーとします。
+`query` は、取り込み済み event を ingest 順のまま `RetrievedMemory` に変換して返します。`budget.max_items` が指定された場合は、ingest 済み event の末尾 N 件だけを選び、返却順も ingest 順のまま保ちます。`budget.max_tokens` は Phase 1 の `ReturnAllMemoryBackend` では未対応であり、CLI で指定された場合は明示的にエラーとします。
 
 ### 9.2 Phase 1 で backend に入れないもの
 
@@ -411,7 +411,7 @@ Phase 1 で最低限入れるテストは次です。
 5. LongMemEval loader が parallel array の長さ不一致で fail-fast する test
 6. LongMemEval adapter が abstention / `has_answer` を保持する test
 7. LoCoMo / LongMemEval adapter の `question_id` / `event_id` 正規化規則を固定する test
-8. `ReturnAllMemoryBackend` の `query` が時系列で新しい N 件を返す test
+8. `ReturnAllMemoryBackend` の `query` が ingest 順の末尾 N 件を返す test
 9. `--max-tokens` 指定時に CLI がエラーを返す test
 10. `DebugAnswerer` の fixed answer test
 11. runner の end-to-end test

@@ -1,8 +1,15 @@
-mod run;
+mod metadata;
+mod resolve;
+#[cfg(test)]
+mod test_support;
+mod toml;
+mod types;
+mod validate;
 
-pub use run::{
+pub use resolve::{load_run_config, parse_config_file};
+pub use types::{
     AnswererConfig, AnswererKind, BackendConfig, BackendKind, OpenAiCompatibleAnswererConfig,
-    ParsedConfig, ResolvedAnswererMetadata, ResolvedBackendMetadata, ResolvedConfig,
-    ResolvedOpenAiCompatibleAnswererMetadata, ResolvedRunMetadata, RunConfig, ValidatedConfig,
-    load_run_config, parse_config_file,
+    ParsedConfig, PromptConfig, ResolvedAnswererMetadata, ResolvedBackendMetadata, ResolvedConfig,
+    ResolvedOpenAiCompatibleAnswererMetadata, ResolvedPromptMetadata, ResolvedRunMetadata,
+    RunConfig, ValidatedConfig,
 };

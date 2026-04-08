@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde_json::{Map, Value};
 
 use crate::answerer::Answerer;
 use crate::model::{AnswerRequest, GeneratedAnswer};
@@ -27,14 +28,19 @@ impl DebugAnswerer {
 #[async_trait]
 impl Answerer for DebugAnswerer {
     async fn answer(&self, request: AnswerRequest<'_>) -> anyhow::Result<GeneratedAnswer> {
+        let mut metadata = Map::new();
+        metadata.insert("prompt".to_string(), request.prompt.prompt_metadata());
+        metadata.insert(
+            "answerer".to_string(),
+            serde_json::json!({
+                "kind": "debug",
+                "mode": "fixed",
+            }),
+        );
+
         Ok(GeneratedAnswer {
             text: self.fixed_answer.clone(),
-            metadata: serde_json::json!({
-                "answerer_kind": "debug",
-                "mode": "fixed",
-                "question_id": request.question.question_id,
-                "retrieved_count": request.retrieved.len(),
-            }),
+            metadata: Value::Object(metadata),
         })
     }
 }
@@ -43,46 +49,33 @@ impl Answerer for DebugAnswerer {
 mod tests {
     use super::DebugAnswerer;
     use crate::answerer::Answerer;
-    use crate::model::{
-        AnswerRequest, BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant,
-    };
+    use crate::model::AnswerRequest;
+    use crate::prompt::PreparedPrompt;
 
     #[tokio::test]
     async fn returns_fixed_answer_with_debug_metadata() {
         let answerer = DebugAnswerer::default();
-        let case = BenchmarkCase {
-            dataset: BenchmarkDataset::LoCoMo,
-            case_id: "locomo:sample".to_string(),
-            events: Vec::new(),
-            questions: Vec::new(),
-            metadata: serde_json::Value::Null,
-        };
-        let question = BenchmarkQuestion {
-            question_id: "locomo:sample:q0".to_string(),
-            question: "What happened?".to_string(),
-            question_timestamp: None,
-            gold_answers: vec!["gold".to_string()],
-            evidence_event_ids: Vec::new(),
-            evidence_session_ids: Vec::new(),
-            category: Some(1),
-            question_type: None,
-            gold_answer_variant: GoldAnswerVariant::Default,
-            is_abstention: false,
-            metadata: serde_json::Value::Null,
+        let prompt = PreparedPrompt {
+            system_prompt: None,
+            user_prompt: "Question".to_string(),
+            template_id: "locomo.qa.default.v1".to_string(),
+            metadata: serde_json::json!({
+                "requested_profile": serde_json::Value::Null,
+                "resolved_profile": serde_json::Value::Null,
+                "context_kind": "RetrievedMemories",
+            }),
         };
 
         let generated = answerer
-            .answer(AnswerRequest {
-                dataset: BenchmarkDataset::LoCoMo,
-                case: &case,
-                question: &question,
-                retrieved: &[],
-            })
+            .answer(AnswerRequest { prompt: &prompt })
             .await
             .unwrap();
 
         assert_eq!(generated.text, "[debug-answer]");
-        assert_eq!(generated.metadata["answerer_kind"], "debug");
-        assert_eq!(generated.metadata["question_id"], "locomo:sample:q0");
+        assert_eq!(generated.metadata["answerer"]["kind"], "debug");
+        assert_eq!(
+            generated.metadata["prompt"]["template_id"],
+            "locomo.qa.default.v1"
+        );
     }
 }

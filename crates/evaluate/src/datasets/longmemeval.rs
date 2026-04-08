@@ -152,6 +152,7 @@ pub fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<Bench
                 metadata: json!({
                     "dataset": "longmemeval",
                     "session_id": session.session_id,
+                    "session_date": session.date,
                     "has_answer": message.has_answer,
                 }),
             });
@@ -190,6 +191,7 @@ pub fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<Bench
         metadata: json!({
             "dataset": "longmemeval",
             "raw_question_id": entry.question_id,
+            "raw_question_date": entry.question_date,
         }),
     };
 

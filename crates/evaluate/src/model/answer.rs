@@ -1,14 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, RetrievedMemory};
+use crate::prompt::PreparedPrompt;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AnswerRequest<'a> {
-    pub dataset: BenchmarkDataset,
-    pub case: &'a BenchmarkCase,
-    pub question: &'a BenchmarkQuestion,
-    pub retrieved: &'a [RetrievedMemory],
+    pub prompt: &'a PreparedPrompt,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
