@@ -51,7 +51,7 @@ Phase 1 の完了条件は次です。
 
 - LoCoMo: まずは exact match ベースの簡易 judge
 - LongMemEval: まずは exact match + abstention 判定の簡易 judge
-- type-specific prompt や LLM judge は Phase 3 以降に強化する
+- type-specific な judge prompt や LLM judge は Phase 4 以降に強化する
 
 ここで judge を作り込み過ぎると、肝心の runner と I/F 固定が遅れます。
 
@@ -323,7 +323,7 @@ Phase 1 では次の簡易仕様にします。
 - `metric_semantics_version`
 - `provisional: true`
 
-LLM judge 化は Phase 3 以降で行います。
+LLM judge 化は Phase 4 以降で行います。
 
 ## 11. Runner 実装計画
 
@@ -431,7 +431,7 @@ Phase 1 で最低限入れるテストは次です。
 対策:
 
 - Phase 1 の judge は簡易版に限定する
-- official rubric 対応は Phase 3 へ送る
+- official rubric 対応は Phase 4 へ送る
 
 ### 15.3 dataset adapter と runner の責務が混ざるリスク
 

@@ -45,9 +45,9 @@ Phase 2 では runner の責務は増やしません。
 
 この段階で解きたいのは「stub から実 LLM に置き換えられるか」です。
 
-- retrieval 指標の精密化は Phase 3
-- official judge や type-specific rubric は Phase 3 以降
-- checkpoint / resume や baseline 追加は Phase 4
+- benchmark-specific な回答 prompt への移行は Phase 3
+- official judge や type-specific rubric は Phase 4 以降
+- checkpoint / resume や baseline 追加は Phase 6
 
 このため、Phase 2 の結果として出る accuracy は引き続き **暫定 judge による配線確認用の値** と位置付けます。  
 LoCoMo の F1 ベース評価や LongMemEval の official `evaluate_qa.py` / type-specific rubric への準拠は後続 Phase へ送ります。
