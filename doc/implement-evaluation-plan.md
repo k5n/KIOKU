@@ -13,12 +13,16 @@
 - 採点
 - 集計とレポート
 
-最初の完成条件は次です。
+ここでの当面の完成条件は次です。
 
 1. LoCoMo と LongMemEval を読み込める
 2. 共通 runner で両方回せる
 3. スタブ記憶層で動く
-4. LoCoMo / LongMemEval それぞれに合った Judge で採点できる
+4. PromptBuilder と Answerer が分離されている
+5. LoCoMo は KIOKU 用仕様 `locomo_kioku_v1` で採点できる
+
+LongMemEval については、まだ KIOKU 用の評価仕様を確定していません。  
+そのため、LongMemEval の benchmark-specific judge / retrieval 指標は、仕様確定後に runner へ組み込みます。
 
 ## 2. 設計原則
 
@@ -354,32 +358,45 @@ pub trait Answerer {
 
 ### 7.3 Judge
 
-Judge は dataset ごとに分けます。
+Judge は dataset ごとに分けます。  
+ただし、answer judge と retrieval judge は入力の形が異なるため、1 つの trait に無理に寄せません。
 
 ```rust
 #[async_trait]
-pub trait Judge {
-    async fn judge(
+pub trait AnswerJudge {
+    async fn judge_answer(
         &self,
         question: &BenchmarkQuestion,
         generated: &GeneratedAnswer,
     ) -> anyhow::Result<Judgement>;
 }
+
+#[async_trait]
+pub trait RetrievalJudge {
+    async fn judge_retrieval(
+        &self,
+        question: &BenchmarkQuestion,
+        context: &PromptContext,
+    ) -> anyhow::Result<Judgement>;
+}
 ```
+
+同じ judge runtime を共有しても構いませんが、runner から見た責務は分けておいた方が `locomo_kioku_v1` のような仕様に対応しやすいです。
 
 ### LoCoMoJudge
 
-- 主指標: LLM Judge
-- 補助指標: Exact Match / F1 / BLEU-1
-- category 1-4 を main score
-- category 5 は別枠
+- まず実装対象にするのは `locomo_kioku_v1`
+- retrieval sufficiency judge と answer correctness judge の 2 本を持つ
+- category 1-4 を main score にする
+- category 5 は v1 のスコープ外とする
+- LoCoMo 公式 F1 互換 judge は必要になった時点で別 mode として追加する
 
 ### LongMemEvalJudge
 
-- official `evaluate_qa.py` と同じ type-specific prompt を使う
-- `task-averaged accuracy`, `overall accuracy`, `abstention accuracy` を出す
+- KIOKU 用評価仕様が確定するまでは benchmark-specific 実装を固定しない
+- 仕様確定後に question type / abstention / retrieval の扱いをまとめて実装する
 
-LongMemEval は generic judge で簡略化しない方がよいです。
+LongMemEval は仕様未確定のまま official judge 互換へ寄せ切らない方がよいです。
 
 ## 8. runner の流れ
 
@@ -390,11 +407,13 @@ runner は dataset に依らず次の順で動かします。
 3. case ごとに backend を `reset`
 4. `events` を順に `ingest`
 5. question 時点で `query`
-6. retrieval 結果を保存
-7. 回答用 `PromptBuilder` で prompt を構築
-8. `Answerer` で最終回答を生成
-9. `Judge` で採点
-10. metrics を集計して report を出す
+6. 必要なら `PromptContext` を確定する
+7. retrieval judge を実行する
+8. 回答用 `PromptBuilder` で prompt を構築
+9. `Answerer` で最終回答を生成
+10. answer judge を実行する
+11. retrieval / answer logs を保存する
+12. metrics を集計して report を出す
 
 この流れは `EverOS/evaluation` の 4-stage pipeline に近く、理解しやすいです。
 
@@ -572,10 +591,13 @@ crates/evaluate/src/
 
 ## 12. 段階的な実装順
 
-Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品質改善が混ざって進捗判定が曖昧になります。  
-そのため、最初の完了条件は **「stub で end-to-end を通すこと」** に限定し、その後に設定基盤を整理してから LLM 統合へ進めます。
+Phase 1-3 までは、公式 prompt への寄せを含めてすでに進めた実装方針をそのまま活かします。  
+ここで得られた一番重要な成果は、**PromptBuilder と Answerer を分離し、prompt 構築を benchmark/profile ロジックとして独立させたこと**です。  
+LoCoMo / LongMemEval の公式 prompt に寄せた部分は最終仕様ではなくなったものの、この分離自体はそのまま有効です。
 
-### Phase 1: stub で runner を完走させる
+ここから先は、各 benchmark の「公式互換」を先に目指すのではなく、**KIOKU 用に定めた評価仕様を順番に実装する** 方針に切り替えます。
+
+### Phase 1: stub で runner を完走させる （完了）
 
 まずは最小実装で end-to-end を通します。
 
@@ -590,7 +612,7 @@ Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品
 この段階で「全履歴を返すだけでベンチマークが最後まで回る」状態にします。  
 ここで得られる metrics は、比較用の最終スコアではなく **runner / adapter / logging の配線確認用** と位置付けます。
 
-### Phase 1.5: TOML 設定ファイルへ移行する
+### Phase 1.5: TOML 設定ファイルへ移行する （完了）
 
 次に、評価実行設定を CLI 引数直書きから TOML 設定ファイルへ移します。
 
@@ -610,7 +632,7 @@ Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品
 この段階で LoCoMo / LongMemEval ごとに固定の設定ファイルを指定するだけで評価を実行できる状態にします。  
 設定値の部分上書きは CLI では行わず、設定の単一の truth source は TOML に置きます。
 
-### Phase 2: LLM Answerer を導入する
+### Phase 2: LLM Answerer を導入する （完了）
 
 次に、回答生成を fixed 応答から実 LLM 呼び出しへ進めます。
 
@@ -627,7 +649,7 @@ Phase 1 が大きすぎると、runner の配線確認と LLM 実装・評価品
 また、prompt builder も benchmark 固有仕様への完全準拠はまだ行わず、LoCoMo / LongMemEval の dataset-specific な回答 template と context profile は次の Phase で整理します。  
 LoCoMo の F1 ベース評価や LongMemEval の official `evaluate_qa.py` / type-specific rubric への準拠は、その次の judge Phase で扱います。
 
-### Phase 3: benchmark-specific Answer Prompt を入れる
+### Phase 3: benchmark-specific Answer Prompt を入れる （完了）
 
 次に、回答 prompt の構築を `Answerer` から切り離し、dataset / benchmark ごとの template 選択を明示します。
 
@@ -638,24 +660,47 @@ LoCoMo の F1 ベース評価や LongMemEval の official `evaluate_qa.py` / typ
 5. `prompt_template_id` / `prompt_profile` を answer log に残せるようにする
 6. `DebugAnswerer` と `LlmBackedAnswerer` の両方が同じ prompt 構築結果を受け取れるようにする
 
-### Phase 4: benchmark-specific Judge を入れる
+この Phase は完了済みです。  
+LoCoMo / LongMemEval の公式 prompt 互換性そのものは今後の主目標ではありませんが、prompt 構築を独立コンポーネントとして切り出せたことで、以降の benchmark-specific 仕様変更を局所化できます。
 
-次に、ベンチマーク比較に使うための judge を dataset ごとに整備します。
+### Phase 4: `locomo_kioku_v1` を実装する
 
-1. LoCoMo の QA 評価を benchmark 仕様に寄せる
-2. LoCoMo の短答前提と F1 ベース採点へ移行する
-3. LongMemEval の official `evaluate_qa.py` 相当の判定を実装する
-4. LongMemEval の question type ごとの rubric を実装する
-5. `judge_kind` / `metric_semantics_version` を benchmark-specific な値へ更新する
+次は LoCoMo の KIOKU 用評価仕様 `locomo_kioku_v1` を実装します。  
+ここでは judge と retrieval を別 Phase に分けず、**1 つの評価フローとしてまとめて実装する** 方が進めやすいです。
 
-### Phase 5: retrieval 指標を入れる
+理由は次です。
 
-次に retrieval 側を評価可能にします。
+1. `locomo_kioku_v1` の retrieval 評価対象は `prompt_context.text` であり、backend の生 retrieval item ではない
+2. retrieval judge と answerer は同じ `prompt_context.text` を共有する
+3. retrieval log / answer log / aggregate metrics を同じ question 実行単位で更新する必要がある
+4. 分割すると runner, logging, metrics の配線を 2 回触ることになり、手戻りが増える
 
-1. LoCoMo の `evidence` に対する `hit_any@k`, `recall_all@k`, `mrr`
-2. LongMemEval の session-level 指標
-3. LongMemEval の turn-level 指標
-4. abstention を retrieval 集計から除外
+したがって、この Phase では answer correctness と retrieval sufficiency を同時に benchmark semantics へ揃えます。
+
+1. LoCoMo の実行パスを `locomo_kioku_v1` 前提に切り替える
+2. category 1-4 のみを評価対象にする
+3. `PromptContext` 必須の実行条件を runner / backend 契約に反映する
+4. retrieval sufficiency judge を実装する
+5. answer correctness judge を実装する
+6. LoCoMo 用 answer prompt を `locomo.kioku.answer.v1` に揃える
+7. `answers.jsonl`, `retrieval.jsonl`, `metrics.json`, `run.resolved.json` の semantics を `locomo_kioku_v1` に合わせる
+8. `overall_answer_accuracy` と `overall_retrieval_sufficiency_accuracy`、および per-category 集計を出す
+9. `judge_kind` / `metric_semantics_version` を `locomo_kioku_v1` に対応した値へ更新する
+
+### Phase 5: LongMemEval の KIOKU 用評価仕様を実装する
+
+LoCoMo が終わったら、次は LongMemEval の KIOKU 用評価仕様を実装します。  
+ただし現時点では仕様が未確定なので、この Phase は **仕様確定が前提条件** です。
+
+実装内容は仕様決定後に確定しますが、少なくとも次をこの Phase にまとめます。
+
+1. LongMemEval の answer correctness semantics を実装する
+2. LongMemEval の retrieval semantics を実装する
+3. question type / abstention / context profile の扱いを仕様に合わせて整理する
+4. answer logs / retrieval logs / aggregate metrics の semantics を LongMemEval 用に確定する
+5. `judge_kind` / `metric_semantics_version` を LongMemEval 用仕様へ更新する
+
+LongMemEval も LoCoMo と同様に、judge と retrieval を別々に段階化するより、仕様が固まった時点で一気に実装した方が runner と metrics の整合を取りやすいです。
 
 ### Phase 6: 比較しやすい runner にする
 
