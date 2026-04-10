@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
 use super::llm::{LlmAnswerer, LlmGenerateRequest, LlmGenerateResponse, LlmUsage};
-use crate::config::OpenAiCompatibleAnswererConfig;
+use crate::config::{OpenAiCompatibleAnswererConfig, OpenAiCompatibleJudgeConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RigOpenAiCompatibleConfig {
@@ -23,6 +23,18 @@ pub struct RigOpenAiCompatibleConfig {
 
 impl RigOpenAiCompatibleConfig {
     pub fn from_answerer_config(config: &OpenAiCompatibleAnswererConfig) -> Self {
+        Self {
+            base_url: config.base_url.clone(),
+            api_key_env: config.api_key_env.clone(),
+            api_key: std::env::var(&config.api_key_env).unwrap_or_default(),
+            model: config.model.clone(),
+            timeout_secs: config.timeout_secs,
+            max_retries: config.max_retries,
+            retry_backoff_ms: config.retry_backoff_ms,
+        }
+    }
+
+    pub fn from_judge_config(config: &OpenAiCompatibleJudgeConfig) -> Self {
         Self {
             base_url: config.base_url.clone(),
             api_key_env: config.api_key_env.clone(),

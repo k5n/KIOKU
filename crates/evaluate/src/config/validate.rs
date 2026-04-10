@@ -4,7 +4,8 @@ use std::path::Path;
 use crate::model::{BenchmarkDataset, RetrievalBudget};
 
 use super::{
-    AnswererConfig, BackendConfig, BackendKind, PromptConfig, ResolvedConfig, ValidatedConfig,
+    AnswererConfig, BackendConfig, BackendKind, JudgeConfig, OpenAiCompatibleAnswererConfig,
+    OpenAiCompatibleJudgeConfig, PromptConfig, ResolvedConfig, ValidatedConfig,
 };
 
 impl ResolvedConfig {
@@ -17,6 +18,7 @@ impl ResolvedConfig {
         )?;
         validate_prompt(&self.run.prompt, &self.run.dataset, &self)?;
         validate_answerer(&self.run.answerer, &self)?;
+        validate_judge(self.run.judge.as_ref(), &self.run.dataset, &self)?;
         validate_output_dir(&self.run.output_dir)?;
         Ok(ValidatedConfig {
             source_path: self.source_path,
@@ -81,26 +83,43 @@ fn validate_answerer(answerer: &AnswererConfig, source: &ResolvedConfig) -> anyh
                 .openai_compatible
                 .as_ref()
                 .context("openai-compatible answerer config is missing")?;
-            ensure!(
-                !openai.base_url.trim().is_empty(),
-                "answerer.openai_compatible.base_url must not be empty"
-            );
-            ensure!(
-                !openai.model.trim().is_empty(),
-                "answerer.openai_compatible.model must not be empty"
-            );
-            ensure!(
-                !openai.api_key_env.trim().is_empty(),
-                "answerer.openai_compatible.api_key_env must not be empty"
-            );
-            ensure!(
-                openai.timeout_secs > 0,
-                "answerer.openai_compatible.timeout_secs must be greater than 0"
-            );
-            ensure!(
-                openai.max_output_tokens > 0,
-                "answerer.openai_compatible.max_output_tokens must be greater than 0"
-            );
+            validate_openai_runtime_config(openai, "answerer.openai_compatible")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_judge(
+    judge: Option<&JudgeConfig>,
+    dataset: &BenchmarkDataset,
+    source: &ResolvedConfig,
+) -> anyhow::Result<()> {
+    match dataset {
+        BenchmarkDataset::LoCoMo => {
+            let judge = judge.context("LoCoMo runs require a `[judge]` section")?;
+            match judge {
+                JudgeConfig::OpenAiCompatible(openai) => {
+                    let _ = source
+                        .toml
+                        .judge
+                        .as_ref()
+                        .and_then(|judge| judge.openai_compatible.as_ref())
+                        .context("openai-compatible judge config is missing")?;
+                    validate_openai_runtime_config(openai, "judge.openai_compatible")?;
+                }
+            }
+        }
+        BenchmarkDataset::LongMemEval => {
+            if let Some(JudgeConfig::OpenAiCompatible(openai)) = judge {
+                let _ = source
+                    .toml
+                    .judge
+                    .as_ref()
+                    .and_then(|judge| judge.openai_compatible.as_ref())
+                    .context("openai-compatible judge config is missing")?;
+                validate_openai_runtime_config(openai, "judge.openai_compatible")?;
+            }
         }
     }
 
@@ -123,15 +142,118 @@ fn validate_prompt(
                     .is_none(),
                 "inactive prompt section `[prompt.longmemeval]` is not allowed when run.dataset = \"locomo\""
             );
+            let locomo_kioku = prompt.locomo_kioku.as_ref().context(
+                "LoCoMo runs require `[prompt.locomo_kioku]` with answer/judge prompt ids",
+            )?;
+            ensure!(
+                locomo_kioku.answer_template_id == "locomo.kioku.answer.v1",
+                "prompt.locomo_kioku.answer_template_id must be `locomo.kioku.answer.v1`"
+            );
+            ensure!(
+                locomo_kioku.answer_judge_prompt_id == "locomo.kioku.judge.answer.v1",
+                "prompt.locomo_kioku.answer_judge_prompt_id must be `locomo.kioku.judge.answer.v1`"
+            );
+            ensure!(
+                locomo_kioku.retrieval_judge_prompt_id == "locomo.kioku.judge.retrieval.v1",
+                "prompt.locomo_kioku.retrieval_judge_prompt_id must be `locomo.kioku.judge.retrieval.v1`"
+            );
         }
         BenchmarkDataset::LongMemEval => {
             let _ = prompt.longmemeval.context(
                 "LongMemEval runs require `[prompt.longmemeval]` with answer_profile and cot",
             )?;
+            ensure!(
+                source
+                    .toml
+                    .prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.locomo_kioku.as_ref())
+                    .is_none(),
+                "inactive prompt section `[prompt.locomo_kioku]` is not allowed when run.dataset = \"longmemeval\""
+            );
         }
     }
 
     Ok(())
+}
+
+fn validate_openai_runtime_config(
+    openai: &impl OpenAiRuntimeConfig,
+    field_prefix: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        !openai.base_url().trim().is_empty(),
+        "{field_prefix}.base_url must not be empty"
+    );
+    ensure!(
+        !openai.model().trim().is_empty(),
+        "{field_prefix}.model must not be empty"
+    );
+    ensure!(
+        !openai.api_key_env().trim().is_empty(),
+        "{field_prefix}.api_key_env must not be empty"
+    );
+    ensure!(
+        openai.timeout_secs() > 0,
+        "{field_prefix}.timeout_secs must be greater than 0"
+    );
+    ensure!(
+        openai.max_output_tokens() > 0,
+        "{field_prefix}.max_output_tokens must be greater than 0"
+    );
+    Ok(())
+}
+
+trait OpenAiRuntimeConfig {
+    fn base_url(&self) -> &str;
+    fn model(&self) -> &str;
+    fn api_key_env(&self) -> &str;
+    fn timeout_secs(&self) -> u64;
+    fn max_output_tokens(&self) -> u32;
+}
+
+impl OpenAiRuntimeConfig for OpenAiCompatibleAnswererConfig {
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn api_key_env(&self) -> &str {
+        &self.api_key_env
+    }
+
+    fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+
+    fn max_output_tokens(&self) -> u32 {
+        self.max_output_tokens
+    }
+}
+
+impl OpenAiRuntimeConfig for OpenAiCompatibleJudgeConfig {
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn api_key_env(&self) -> &str {
+        &self.api_key_env
+    }
+
+    fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+
+    fn max_output_tokens(&self) -> u32 {
+        self.max_output_tokens
+    }
 }
 
 fn validate_output_dir(output_dir: &Path) -> anyhow::Result<()> {
@@ -168,7 +290,7 @@ mod tests {
             "inactive",
             r#"
 [run]
-dataset = "locomo"
+dataset = "longmemeval"
 input = "input.json"
 output_dir = "out"
 
@@ -187,6 +309,10 @@ max_output_tokens = 128
 timeout_secs = 30
 max_retries = 2
 retry_backoff_ms = 100
+
+[prompt.longmemeval]
+answer_profile = "history-chats"
+cot = false
 "#,
         );
 
@@ -217,7 +343,7 @@ retry_backoff_ms = 100
             &format!(
                 r#"
 [run]
-dataset = "locomo"
+dataset = "longmemeval"
 input = "input.json"
 output_dir = "{}"
 
@@ -226,6 +352,10 @@ kind = "return-all"
 
 [answerer]
 kind = "debug"
+
+[prompt.longmemeval]
+answer_profile = "history-chats"
+cot = false
 "#,
                 dir.display()
             ),

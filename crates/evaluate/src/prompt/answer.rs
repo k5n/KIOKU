@@ -6,6 +6,13 @@ use super::profiles::{locomo, longmemeval};
 use super::{PromptContext, PromptContextKind};
 use crate::model::{BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, RetrievedMemory};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocomoKiokuPromptConfig {
+    pub answer_template_id: String,
+    pub answer_judge_prompt_id: String,
+    pub retrieval_judge_prompt_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LongMemEvalAnswerPromptProfile {
@@ -67,6 +74,7 @@ pub struct PromptBuildRequest<'a> {
     pub question: &'a BenchmarkQuestion,
     pub retrieved: &'a [RetrievedMemory],
     pub prompt_context: Option<&'a PromptContext>,
+    pub locomo_kioku_prompt: Option<&'a LocomoKiokuPromptConfig>,
     pub longmemeval_prompt: Option<LongMemEvalPromptConfig>,
 }
 
@@ -93,34 +101,24 @@ impl PromptBuilder for DefaultPromptBuilder {
 }
 
 fn build_locomo_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<PreparedPrompt> {
+    let config = request
+        .locomo_kioku_prompt
+        .context("LoCoMo prompt config is required to build locomo_kioku answer prompts")?;
     let resolved_context = request
         .prompt_context
         .cloned()
-        .unwrap_or_else(|| PromptContext {
-            kind: PromptContextKind::RetrievedMemories,
-            text: render_retrieved_memories(request.retrieved),
-            metadata: Value::Null,
-        });
-
-    let (template_id, template) = if request.question.category == Some(5) {
-        (locomo::QA_PROMPT_CAT_5_TEMPLATE_ID, locomo::QA_PROMPT_CAT_5)
-    } else {
-        (locomo::QA_PROMPT_TEMPLATE_ID, locomo::QA_PROMPT)
-    };
+        .context("LoCoMo locomo_kioku answer prompt requires backend-provided prompt_context")?;
 
     let user_prompt = format!(
-        "Context:\n{}\n\n{}",
-        resolved_context.text,
-        template.replacen("{}", &request.question.question, 1),
+        "Memory context:\n{}\n\nQuestion:\n{}",
+        resolved_context.text, request.question.question
     );
 
     Ok(PreparedPrompt {
-        system_prompt: None,
+        system_prompt: Some(locomo::KIOKU_ANSWER_SYSTEM_PROMPT.to_string()),
         user_prompt,
-        template_id: template_id.to_string(),
+        template_id: config.answer_template_id.clone(),
         metadata: json!({
-            "requested_profile": Value::Null,
-            "resolved_profile": Value::Null,
             "context_kind": resolved_context.kind,
         }),
     })
@@ -235,15 +233,20 @@ fn render_retrieved_memories(retrieved: &[RetrievedMemory]) -> String {
         .enumerate()
         .map(|(index, memory)| {
             let speaker = memory
-                .speaker_name
-                .as_deref()
-                .or(memory.speaker_id.as_deref())
+                .metadata
+                .get("speaker_name")
+                .and_then(Value::as_str)
+                .or_else(|| memory.metadata.get("speaker_id").and_then(Value::as_str))
                 .unwrap_or("unknown-speaker");
             format!(
-                "{}. [stream={} timestamp={} speaker={}]\n{}",
+                "{}. [memory_id={} session={} timestamp={} speaker={}]\n{}",
                 index + 1,
-                memory.stream_id,
-                memory.timestamp,
+                memory.memory_id,
+                memory
+                    .source_session_id
+                    .as_deref()
+                    .unwrap_or("unknown-session"),
+                memory.timestamp.as_deref().unwrap_or("unknown-timestamp"),
                 speaker,
                 memory.content
             )
@@ -255,8 +258,8 @@ fn render_retrieved_memories(retrieved: &[RetrievedMemory]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DefaultPromptBuilder, LongMemEvalAnswerPromptProfile, LongMemEvalPromptConfig,
-        PromptBuildRequest, PromptBuilder,
+        DefaultPromptBuilder, LocomoKiokuPromptConfig, LongMemEvalAnswerPromptProfile,
+        LongMemEvalPromptConfig, PromptBuildRequest, PromptBuilder,
     };
     use crate::model::{
         BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant, RetrievedMemory,
@@ -264,10 +267,15 @@ mod tests {
     use crate::prompt::{PromptContext, PromptContextKind};
 
     #[test]
-    fn locomo_category_1_4_uses_default_template() {
+    fn locomo_uses_locomo_kioku_template() {
         let builder = DefaultPromptBuilder;
         let case = sample_case(BenchmarkDataset::LoCoMo);
         let question = sample_question(BenchmarkDataset::LoCoMo, Some(4));
+        let context = PromptContext {
+            kind: PromptContextKind::StructuredFacts,
+            text: "1. [fact] The user moved to Kyoto.".to_string(),
+            metadata: serde_json::Value::Null,
+        };
 
         let prompt = builder
             .build_answer_prompt(PromptBuildRequest {
@@ -275,42 +283,42 @@ mod tests {
                 case: &case,
                 question: &question,
                 retrieved: &sample_retrieved(),
-                prompt_context: None,
+                prompt_context: Some(&context),
+                locomo_kioku_prompt: Some(&sample_locomo_prompt_config()),
                 longmemeval_prompt: None,
             })
             .unwrap();
 
-        assert_eq!(prompt.template_id, "locomo.qa.default.v1");
-        assert!(
-            prompt
-                .user_prompt
-                .contains("write an answer in the form of a short phrase")
+        assert_eq!(prompt.template_id, "locomo.kioku.answer.v1");
+        assert_eq!(
+            prompt.system_prompt.as_deref(),
+            Some(
+                "You answer questions using only the provided memory context.\nDo not use external knowledge.\nIf the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nReturn only the final answer as a short phrase."
+            )
         );
+        assert!(prompt.user_prompt.contains("Memory context:"));
     }
 
     #[test]
-    fn locomo_category_5_uses_adversarial_template() {
+    fn locomo_rejects_missing_prompt_context() {
         let builder = DefaultPromptBuilder;
         let case = sample_case(BenchmarkDataset::LoCoMo);
-        let question = sample_question(BenchmarkDataset::LoCoMo, Some(5));
+        let question = sample_question(BenchmarkDataset::LoCoMo, Some(2));
 
-        let prompt = builder
+        let error = builder
             .build_answer_prompt(PromptBuildRequest {
                 dataset: BenchmarkDataset::LoCoMo,
                 case: &case,
                 question: &question,
                 retrieved: &sample_retrieved(),
                 prompt_context: None,
+                locomo_kioku_prompt: Some(&sample_locomo_prompt_config()),
                 longmemeval_prompt: None,
             })
-            .unwrap();
+            .unwrap_err()
+            .to_string();
 
-        assert_eq!(prompt.template_id, "locomo.qa.cat5.v1");
-        assert!(
-            prompt
-                .user_prompt
-                .contains("Based on the above context, answer the following question.")
-        );
+        assert!(error.contains("requires backend-provided prompt_context"));
     }
 
     #[test]
@@ -340,6 +348,7 @@ mod tests {
                 question: &question,
                 retrieved: &sample_retrieved(),
                 prompt_context: Some(&context),
+                locomo_kioku_prompt: None,
                 longmemeval_prompt: Some(LongMemEvalPromptConfig {
                     answer_profile: LongMemEvalAnswerPromptProfile::NoRetrieval,
                     cot: false,
@@ -453,6 +462,7 @@ mod tests {
                 question: &question,
                 retrieved: &sample_retrieved(),
                 prompt_context: prompt_context.as_ref(),
+                locomo_kioku_prompt: None,
                 longmemeval_prompt: Some(LongMemEvalPromptConfig {
                     answer_profile: profile,
                     cot,
@@ -491,13 +501,24 @@ mod tests {
 
     fn sample_retrieved() -> Vec<RetrievedMemory> {
         vec![RetrievedMemory {
-            event_id: "event-1".to_string(),
-            stream_id: "session-1".to_string(),
-            timestamp: "2024-01-01T10:00:00Z".to_string(),
+            memory_id: "event-1".to_string(),
+            source_event_id: Some("event-1".to_string()),
+            source_session_id: Some("session-1".to_string()),
+            score: None,
+            timestamp: Some("2024-01-01T10:00:00Z".to_string()),
             content: "The user moved to Kyoto.".to_string(),
-            speaker_id: Some("user".to_string()),
-            speaker_name: Some("User".to_string()),
-            metadata: serde_json::Value::Null,
+            metadata: serde_json::json!({
+                "speaker_id": "user",
+                "speaker_name": "User",
+            }),
         }]
+    }
+
+    fn sample_locomo_prompt_config() -> LocomoKiokuPromptConfig {
+        LocomoKiokuPromptConfig {
+            answer_template_id: "locomo.kioku.answer.v1".to_string(),
+            answer_judge_prompt_id: "locomo.kioku.judge.answer.v1".to_string(),
+            retrieval_judge_prompt_id: "locomo.kioku.judge.retrieval.v1".to_string(),
+        }
     }
 }

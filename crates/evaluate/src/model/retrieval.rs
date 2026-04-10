@@ -33,12 +33,16 @@ pub struct QueryOutput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetrievedMemory {
-    pub event_id: String,
-    pub stream_id: String,
-    pub timestamp: String,
+    pub memory_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
     pub content: String,
-    pub speaker_id: Option<String>,
-    pub speaker_name: Option<String>,
     #[serde(default)]
     pub metadata: Value,
 }

@@ -3,7 +3,7 @@ mod context;
 mod profiles;
 
 pub use answer::{
-    DefaultPromptBuilder, LongMemEvalAnswerPromptProfile, LongMemEvalPromptConfig, PreparedPrompt,
-    PromptBuildRequest, PromptBuilder,
+    DefaultPromptBuilder, LocomoKiokuPromptConfig, LongMemEvalAnswerPromptProfile,
+    LongMemEvalPromptConfig, PreparedPrompt, PromptBuildRequest, PromptBuilder,
 };
 pub use context::{PromptContext, PromptContextKind};

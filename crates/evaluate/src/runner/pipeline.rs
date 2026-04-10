@@ -89,6 +89,7 @@ where
                             question,
                             retrieved: &query_output.retrieved,
                             prompt_context: query_output.prompt_context.as_ref(),
+                            locomo_kioku_prompt: self.prompt_config.locomo_kioku.as_ref(),
                             longmemeval_prompt: self.prompt_config.longmemeval,
                         })?;
 
@@ -106,12 +107,32 @@ where
                     dataset,
                     case_id: case.case_id.clone(),
                     question_id: question.question_id.clone(),
+                    category: question.category,
                     retrieved_count: query_output.retrieved.len(),
-                    retrieved_event_ids: query_output
+                    retrieved_memory_ids: query_output
                         .retrieved
                         .iter()
-                        .map(|memory| memory.event_id.clone())
+                        .map(|memory| memory.memory_id.clone())
                         .collect(),
+                    retrieved_source_event_ids: query_output
+                        .retrieved
+                        .iter()
+                        .filter_map(|memory| memory.source_event_id.clone())
+                        .collect(),
+                    context_kind: query_output.prompt_context.as_ref().map(|context| {
+                        serde_json::to_value(&context.kind)
+                            .ok()
+                            .and_then(|value| value.as_str().map(ToString::to_string))
+                            .unwrap_or_else(|| "unknown".to_string())
+                    }),
+                    context_text: query_output
+                        .prompt_context
+                        .as_ref()
+                        .map(|context| context.text.clone()),
+                    is_sufficient: None,
+                    score: None,
+                    label: None,
+                    judge_metadata: serde_json::Value::Null,
                     evidence_event_ids: question.evidence_event_ids.clone(),
                     evidence_session_ids: question.evidence_session_ids.clone(),
                     metadata: query_output.metadata,
@@ -124,7 +145,7 @@ where
                     question: question.question.clone(),
                     generated_answer: generated.text,
                     gold_answers: question.gold_answers.clone(),
-                    is_correct: judgement.is_correct,
+                    is_correct: judgement.passed,
                     score: judgement.score,
                     label: judgement.label.clone(),
                     question_type: question.question_type.clone(),
@@ -202,6 +223,7 @@ mod tests {
                     answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
                     cot: false,
                 }),
+                locomo_kioku: None,
             },
         };
 
@@ -230,6 +252,7 @@ mod tests {
                     answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
                     cot: false,
                 }),
+                locomo_kioku: None,
             },
         };
 
@@ -291,6 +314,7 @@ mod tests {
                     answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
                     cot: false,
                 }),
+                locomo_kioku: None,
             },
         };
 

@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PromptContextKind {
     RetrievedMemories,
+    StructuredFacts,
     NoRetrieval,
     HistoryChats,
     HistoryChatsWithFacts,

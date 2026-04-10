@@ -1,13 +1,6 @@
-pub const QA_PROMPT_TEMPLATE_ID: &str = "locomo.qa.default.v1";
-pub const QA_PROMPT_CAT_5_TEMPLATE_ID: &str = "locomo.qa.cat5.v1";
-
-pub const QA_PROMPT: &str = concat!(
-    "Based on the above context, write an answer in the form of a short phrase ",
-    "for the following question. Answer with exact words from the context whenever possible.\n\n",
-    "Question: {} Short answer:"
-);
-
-pub const QA_PROMPT_CAT_5: &str = concat!(
-    "Based on the above context, answer the following question.\n\n",
-    "Question: {} Short answer:"
+pub const KIOKU_ANSWER_SYSTEM_PROMPT: &str = concat!(
+    "You answer questions using only the provided memory context.\n",
+    "Do not use external knowledge.\n",
+    "If the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\n",
+    "Return only the final answer as a short phrase."
 );

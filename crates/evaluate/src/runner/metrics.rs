@@ -1,4 +1,4 @@
-use crate::judge::Judgement;
+use crate::judge::BinaryJudgement;
 use crate::model::{
     BenchmarkDataset, CategoryMetrics, DatasetMetrics, MetricProvenance, MetricsReport,
 };
@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 pub(super) fn build_metrics(
     dataset: BenchmarkDataset,
-    judgements: &[(&crate::model::BenchmarkQuestion, Judgement)],
+    judgements: &[(&crate::model::BenchmarkQuestion, BinaryJudgement)],
     retrieved_counts: &[f32],
 ) -> MetricsReport {
     let applicable: Vec<_> = match dataset {
@@ -18,7 +18,7 @@ pub(super) fn build_metrics(
     };
     let overall_correct = applicable
         .iter()
-        .filter(|(_, judgement)| judgement.is_correct)
+        .filter(|(_, judgement)| judgement.passed)
         .count();
     let overall_total = applicable.len();
 
@@ -40,13 +40,13 @@ pub(super) fn build_metrics(
                     accuracy: 0.0,
                 });
             entry.total += 1;
-            if judgement.is_correct {
+            if judgement.passed {
                 entry.correct += 1;
             }
 
             if category == 5 {
                 adversarial_total += 1;
-                if judgement.is_correct {
+                if judgement.passed {
                     adversarial_correct += 1;
                 }
             }
@@ -61,14 +61,14 @@ pub(super) fn build_metrics(
                     accuracy: 0.0,
                 });
             entry.total += 1;
-            if judgement.is_correct {
+            if judgement.passed {
                 entry.correct += 1;
             }
         }
 
         if question.is_abstention {
             abstention_total += 1;
-            if judgement.is_correct {
+            if judgement.passed {
                 abstention_correct += 1;
             }
         }
@@ -85,28 +85,143 @@ pub(super) fn build_metrics(
 
     MetricsReport {
         dataset,
+        protocol: None,
         provenance: MetricProvenance {
-            judge_kind: match dataset {
+            answer_judge_kind: None,
+            retrieval_judge_kind: None,
+            judge_kind: Some(match dataset {
                 BenchmarkDataset::LoCoMo => "locomo_exact_match".to_string(),
                 BenchmarkDataset::LongMemEval => "longmemeval_exact_match".to_string(),
-            },
+            }),
             metric_semantics_version: "phase1-minimal-v1".to_string(),
             provisional: true,
             locomo_overall_scope: matches!(dataset, BenchmarkDataset::LoCoMo)
                 .then(|| "category_1_4".to_string()),
+            answer_judge_model: None,
+            retrieval_judge_model: None,
+            answer_judge_prompt_id: None,
+            retrieval_judge_prompt_id: None,
+            answerer_model: None,
         },
         metrics: DatasetMetrics {
             question_count: judgements.len(),
-            scored_question_count: overall_total,
-            overall_accuracy: ratio(overall_correct, overall_total),
+            scored_question_count: Some(overall_total),
+            overall_accuracy: Some(ratio(overall_correct, overall_total)),
+            overall_answer_accuracy: None,
+            overall_retrieval_sufficiency_accuracy: None,
             adversarial_accuracy: (adversarial_total > 0)
                 .then(|| ratio(adversarial_correct, adversarial_total)),
             abstention_accuracy: (abstention_total > 0)
                 .then(|| ratio(abstention_correct, abstention_total)),
             average_retrieved_item_count,
             per_category_accuracy,
+            per_category_answer_accuracy: BTreeMap::new(),
+            per_category_retrieval_sufficiency_accuracy: BTreeMap::new(),
             per_type_accuracy,
         },
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct LoCoMoKiokuMetricInput {
+    pub category: u8,
+    pub answer: BinaryJudgement,
+    pub retrieval: BinaryJudgement,
+    pub retrieved_count: usize,
+    pub answerer_model: String,
+}
+
+pub(super) fn build_locomo_kioku_metrics(
+    inputs: &[LoCoMoKiokuMetricInput],
+    answer_judge_prompt_id: &str,
+    retrieval_judge_prompt_id: &str,
+) -> MetricsReport {
+    let mut per_category_answer_accuracy = BTreeMap::new();
+    let mut per_category_retrieval_sufficiency_accuracy = BTreeMap::new();
+
+    let mut answer_correct = 0usize;
+    let mut retrieval_correct = 0usize;
+    let mut retrieved_total = 0usize;
+
+    for input in inputs {
+        let key = input.category.to_string();
+
+        let answer_entry = per_category_answer_accuracy
+            .entry(key.clone())
+            .or_insert_with(empty_category_metrics);
+        answer_entry.total += 1;
+        if input.answer.passed {
+            answer_entry.correct += 1;
+            answer_correct += 1;
+        }
+
+        let retrieval_entry = per_category_retrieval_sufficiency_accuracy
+            .entry(key)
+            .or_insert_with(empty_category_metrics);
+        retrieval_entry.total += 1;
+        if input.retrieval.passed {
+            retrieval_entry.correct += 1;
+            retrieval_correct += 1;
+        }
+
+        retrieved_total += input.retrieved_count;
+    }
+
+    finalize_category_metrics(&mut per_category_answer_accuracy);
+    finalize_category_metrics(&mut per_category_retrieval_sufficiency_accuracy);
+
+    let average_retrieved_item_count = if inputs.is_empty() {
+        0.0
+    } else {
+        retrieved_total as f32 / inputs.len() as f32
+    };
+    let answer_metadata = inputs.first().map(|input| &input.answer.metadata);
+    let retrieval_metadata = inputs.first().map(|input| &input.retrieval.metadata);
+
+    MetricsReport {
+        dataset: BenchmarkDataset::LoCoMo,
+        protocol: Some("locomo_kioku_v1".to_string()),
+        provenance: MetricProvenance {
+            answer_judge_kind: Some("locomo_kioku_answer_llm".to_string()),
+            retrieval_judge_kind: Some("locomo_kioku_retrieval_llm".to_string()),
+            judge_kind: None,
+            metric_semantics_version: "locomo_kioku_v1".to_string(),
+            provisional: false,
+            locomo_overall_scope: Some("category_1_4".to_string()),
+            answer_judge_model: answer_metadata
+                .and_then(|metadata| metadata.get("judge_model"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string),
+            retrieval_judge_model: retrieval_metadata
+                .and_then(|metadata| metadata.get("judge_model"))
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string),
+            answer_judge_prompt_id: Some(answer_judge_prompt_id.to_string()),
+            retrieval_judge_prompt_id: Some(retrieval_judge_prompt_id.to_string()),
+            answerer_model: inputs.first().map(|input| input.answerer_model.clone()),
+        },
+        metrics: DatasetMetrics {
+            question_count: inputs.len(),
+            scored_question_count: None,
+            overall_accuracy: None,
+            overall_answer_accuracy: Some(ratio(answer_correct, inputs.len())),
+            overall_retrieval_sufficiency_accuracy: Some(ratio(retrieval_correct, inputs.len())),
+            adversarial_accuracy: None,
+            abstention_accuracy: None,
+            average_retrieved_item_count,
+            per_category_accuracy: BTreeMap::new(),
+            per_category_answer_accuracy,
+            per_category_retrieval_sufficiency_accuracy,
+            per_type_accuracy: BTreeMap::new(),
+        },
+    }
+}
+
+fn empty_category_metrics() -> CategoryMetrics {
+    CategoryMetrics {
+        correct: 0,
+        total: 0,
+        accuracy: 0.0,
     }
 }
 
@@ -126,14 +241,14 @@ fn ratio(correct: usize, total: usize) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::build_metrics;
-    use crate::judge::Judgement;
+    use super::{LoCoMoKiokuMetricInput, build_locomo_kioku_metrics, build_metrics};
+    use crate::judge::BinaryJudgement;
     use crate::model::{BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant};
 
-    fn judgement(is_correct: bool, label: &str) -> Judgement {
-        Judgement {
-            is_correct,
-            score: if is_correct { 1.0 } else { 0.0 },
+    fn judgement(passed: bool, label: &str) -> BinaryJudgement {
+        BinaryJudgement {
+            passed,
+            score: if passed { 1.0 } else { 0.0 },
             label: label.to_string(),
             metadata: serde_json::Value::Null,
         }
@@ -171,8 +286,8 @@ mod tests {
         let metrics = build_metrics(BenchmarkDataset::LoCoMo, &judgements, &[1.0, 2.0]);
 
         assert_eq!(metrics.metrics.question_count, 2);
-        assert_eq!(metrics.metrics.scored_question_count, 1);
-        assert_eq!(metrics.metrics.overall_accuracy, 1.0);
+        assert_eq!(metrics.metrics.scored_question_count, Some(1));
+        assert_eq!(metrics.metrics.overall_accuracy, Some(1.0));
         assert_eq!(metrics.metrics.adversarial_accuracy, Some(0.0));
         assert_eq!(metrics.metrics.average_retrieved_item_count, 1.5);
     }
@@ -190,11 +305,65 @@ mod tests {
 
         let metrics = build_metrics(BenchmarkDataset::LongMemEval, &judgements, &[]);
 
-        assert_eq!(metrics.metrics.overall_accuracy, 2.0 / 3.0);
+        assert_eq!(metrics.metrics.overall_accuracy, Some(2.0 / 3.0));
         assert_eq!(metrics.metrics.abstention_accuracy, Some(1.0));
         assert_eq!(metrics.metrics.per_category_accuracy["1"].accuracy, 0.5);
         assert_eq!(metrics.metrics.per_category_accuracy["2"].accuracy, 1.0);
         assert_eq!(metrics.metrics.per_type_accuracy["type-a"].accuracy, 0.5);
         assert_eq!(metrics.metrics.per_type_accuracy["type-b"].accuracy, 1.0);
+    }
+
+    #[test]
+    fn locomo_kioku_metrics_split_answer_and_retrieval_accuracy() {
+        let metrics = build_locomo_kioku_metrics(
+            &[
+                LoCoMoKiokuMetricInput {
+                    category: 1,
+                    answer: BinaryJudgement {
+                        passed: true,
+                        score: 1.0,
+                        label: "CORRECT".to_string(),
+                        metadata: serde_json::json!({
+                            "judge_model": "judge-model",
+                        }),
+                    },
+                    retrieval: BinaryJudgement {
+                        passed: false,
+                        score: 0.0,
+                        label: "INSUFFICIENT".to_string(),
+                        metadata: serde_json::json!({
+                            "judge_model": "judge-model",
+                        }),
+                    },
+                    retrieved_count: 4,
+                    answerer_model: "answerer-model".to_string(),
+                },
+                LoCoMoKiokuMetricInput {
+                    category: 1,
+                    answer: judgement(false, "WRONG"),
+                    retrieval: judgement(true, "SUFFICIENT"),
+                    retrieved_count: 2,
+                    answerer_model: "answerer-model".to_string(),
+                },
+            ],
+            "locomo.kioku.judge.answer.v1",
+            "locomo.kioku.judge.retrieval.v1",
+        );
+
+        assert_eq!(metrics.protocol.as_deref(), Some("locomo_kioku_v1"));
+        assert_eq!(metrics.metrics.overall_answer_accuracy, Some(0.5));
+        assert_eq!(
+            metrics.metrics.overall_retrieval_sufficiency_accuracy,
+            Some(0.5)
+        );
+        assert_eq!(metrics.metrics.average_retrieved_item_count, 3.0);
+        assert_eq!(
+            metrics.metrics.per_category_answer_accuracy["1"].accuracy,
+            0.5
+        );
+        assert_eq!(
+            metrics.metrics.per_category_retrieval_sufficiency_accuracy["1"].accuracy,
+            0.5
+        );
     }
 }

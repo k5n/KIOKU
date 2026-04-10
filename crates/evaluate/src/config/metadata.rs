@@ -1,6 +1,7 @@
 use super::{
-    AnswererConfig, ResolvedAnswererMetadata, ResolvedBackendMetadata,
-    ResolvedOpenAiCompatibleAnswererMetadata, ResolvedPromptMetadata, ResolvedRunMetadata,
+    AnswererConfig, JudgeConfig, ResolvedAnswererMetadata, ResolvedBackendMetadata,
+    ResolvedJudgeMetadata, ResolvedOpenAiCompatibleAnswererMetadata,
+    ResolvedOpenAiCompatibleJudgeMetadata, ResolvedPromptMetadata, ResolvedRunMetadata,
     ValidatedConfig,
 };
 
@@ -25,6 +26,25 @@ impl ValidatedConfig {
                 }),
             },
         };
+        let judge = match &self.run.judge {
+            None => None,
+            Some(JudgeConfig::OpenAiCompatible(openai)) => Some(ResolvedJudgeMetadata {
+                kind: self.run.judge.as_ref().map_or_else(
+                    || unreachable!("judge existence already matched"),
+                    JudgeConfig::kind,
+                ),
+                openai_compatible: Some(ResolvedOpenAiCompatibleJudgeMetadata {
+                    base_url: openai.base_url.clone(),
+                    model: openai.model.clone(),
+                    api_key_env: openai.api_key_env.clone(),
+                    temperature: openai.temperature,
+                    max_output_tokens: openai.max_output_tokens,
+                    timeout_secs: openai.timeout_secs,
+                    max_retries: openai.max_retries,
+                    retry_backoff_ms: openai.retry_backoff_ms,
+                }),
+            }),
+        };
 
         Ok(ResolvedRunMetadata {
             evaluate_version: env!("CARGO_PKG_VERSION"),
@@ -35,9 +55,11 @@ impl ValidatedConfig {
                 kind: self.run.backend.kind,
             },
             answerer,
+            judge,
             retrieval: self.run.retrieval,
             prompt: ResolvedPromptMetadata {
                 longmemeval: self.run.prompt.longmemeval,
+                locomo_kioku: self.run.prompt.locomo_kioku.clone(),
             },
         })
     }
@@ -46,10 +68,14 @@ impl ValidatedConfig {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        AnswererKind, ResolvedAnswererMetadata, ResolvedOpenAiCompatibleAnswererMetadata,
+        AnswererKind, JudgeKind, ResolvedAnswererMetadata, ResolvedJudgeMetadata,
+        ResolvedOpenAiCompatibleAnswererMetadata, ResolvedOpenAiCompatibleJudgeMetadata,
         parse_config_file,
     };
     use crate::config::test_support::write_temp_config;
+    use crate::prompt::{
+        LocomoKiokuPromptConfig, LongMemEvalAnswerPromptProfile, LongMemEvalPromptConfig,
+    };
 
     #[test]
     fn resolved_metadata_includes_evaluate_version() {
@@ -57,7 +83,7 @@ mod tests {
             "resolved-version",
             r#"
 [run]
-dataset = "locomo"
+dataset = "longmemeval"
 input = "input.json"
 output_dir = "out"
 
@@ -66,6 +92,10 @@ kind = "return-all"
 
 [answerer]
 kind = "debug"
+
+[prompt.longmemeval]
+answer_profile = "history-chats"
+cot = false
 "#,
         );
 
@@ -87,7 +117,7 @@ kind = "debug"
             "resolved-openai-metadata",
             r#"
 [run]
-dataset = "locomo"
+dataset = "longmemeval"
 input = "input.json"
 output_dir = "out"
 
@@ -106,6 +136,10 @@ max_output_tokens = 256
 timeout_secs = 45
 max_retries = 3
 retry_backoff_ms = 250
+
+[prompt.longmemeval]
+answer_profile = "history-chats"
+cot = false
 "#,
         );
 
@@ -133,6 +167,82 @@ retry_backoff_ms = 250
                 }),
             }
         );
-        assert_eq!(metadata.prompt.longmemeval, None);
+        assert_eq!(
+            metadata.prompt.longmemeval,
+            Some(LongMemEvalPromptConfig {
+                answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
+                cot: false,
+            })
+        );
+    }
+
+    #[test]
+    fn resolved_metadata_preserves_locomo_judge_and_prompt_ids() {
+        let path = write_temp_config(
+            "resolved-locomo-metadata",
+            r#"
+[run]
+dataset = "locomo"
+input = "input.json"
+output_dir = "out"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+
+[judge]
+kind = "openai-compatible"
+
+[judge.openai_compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
+[prompt.locomo_kioku]
+answer_template_id = "locomo.kioku.answer.v1"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
+"#,
+        );
+
+        let validated = parse_config_file(path)
+            .unwrap()
+            .into_resolved()
+            .unwrap()
+            .validate()
+            .unwrap();
+        let metadata = validated.resolved_metadata().unwrap();
+
+        assert_eq!(
+            metadata.judge,
+            Some(ResolvedJudgeMetadata {
+                kind: JudgeKind::OpenAiCompatible,
+                openai_compatible: Some(ResolvedOpenAiCompatibleJudgeMetadata {
+                    base_url: "http://localhost:11434/v1".to_string(),
+                    model: "judge-model".to_string(),
+                    api_key_env: "OPENAI_API_KEY".to_string(),
+                    temperature: 0.0,
+                    max_output_tokens: 512,
+                    timeout_secs: 60,
+                    max_retries: 3,
+                    retry_backoff_ms: 500,
+                }),
+            })
+        );
+        assert_eq!(
+            metadata.prompt.locomo_kioku,
+            Some(LocomoKiokuPromptConfig {
+                answer_template_id: "locomo.kioku.answer.v1".to_string(),
+                answer_judge_prompt_id: "locomo.kioku.judge.answer.v1".to_string(),
+                retrieval_judge_prompt_id: "locomo.kioku.judge.retrieval.v1".to_string(),
+            })
+        );
     }
 }

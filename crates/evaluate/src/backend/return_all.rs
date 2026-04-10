@@ -68,17 +68,21 @@ impl MemoryBackend for ReturnAllMemoryBackend {
             selected_events
                 .into_iter()
                 .map(|event| RetrievedMemory {
-                    event_id: event.event_id.clone(),
-                    stream_id: event.stream_id.clone(),
-                    timestamp: event.timestamp.clone(),
+                    memory_id: event.event_id.clone(),
+                    source_event_id: Some(event.event_id.clone()),
+                    source_session_id: Some(event.stream_id.clone()),
+                    score: None,
+                    timestamp: Some(event.timestamp.clone()),
                     content: event.content.clone(),
-                    speaker_id: event.speaker_id.clone(),
-                    speaker_name: event.speaker_name.clone(),
-                    metadata: event.metadata.clone(),
+                    metadata: serde_json::json!({
+                        "speaker_id": event.speaker_id,
+                        "speaker_name": event.speaker_name,
+                        "event_metadata": event.metadata,
+                    }),
                 })
                 .collect()
         };
-        let prompt_context = build_prompt_context(&input, &self.events);
+        let prompt_context = build_prompt_context(&input, &retrieved, &self.events);
 
         Ok(QueryOutput {
             retrieved,
@@ -90,9 +94,19 @@ impl MemoryBackend for ReturnAllMemoryBackend {
     }
 }
 
-fn build_prompt_context(input: &QueryInput, events: &[BenchmarkEvent]) -> Option<PromptContext> {
+fn build_prompt_context(
+    input: &QueryInput,
+    retrieved: &[RetrievedMemory],
+    events: &[BenchmarkEvent],
+) -> Option<PromptContext> {
     match input.scope.dataset {
-        crate::model::BenchmarkDataset::LoCoMo => None,
+        crate::model::BenchmarkDataset::LoCoMo => Some(PromptContext {
+            kind: PromptContextKind::StructuredFacts,
+            text: render_locomo_context(retrieved),
+            metadata: serde_json::json!({
+                "backend_kind": "return_all",
+            }),
+        }),
         crate::model::BenchmarkDataset::LongMemEval => {
             if matches!(
                 input.requested_longmemeval_prompt_profile,
@@ -114,6 +128,27 @@ fn build_prompt_context(input: &QueryInput, events: &[BenchmarkEvent]) -> Option
             })
         }
     }
+}
+
+fn render_locomo_context(retrieved: &[RetrievedMemory]) -> String {
+    if retrieved.is_empty() {
+        return "(none)".to_string();
+    }
+
+    retrieved
+        .iter()
+        .enumerate()
+        .map(|(index, memory)| {
+            format!(
+                "{}. [memory_id={} source_event_id={}]\n{}",
+                index + 1,
+                memory.memory_id,
+                memory.source_event_id.as_deref().unwrap_or("unknown-event"),
+                memory.content.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn render_history_chats(events: &[BenchmarkEvent], max_items: Option<usize>) -> String {
@@ -246,7 +281,7 @@ mod tests {
         let event_ids: Vec<_> = output
             .retrieved
             .into_iter()
-            .map(|item| item.event_id)
+            .map(|item| item.memory_id)
             .collect();
         assert_eq!(event_ids, vec!["e3".to_string(), "e2".to_string()]);
     }
@@ -379,5 +414,41 @@ mod tests {
             context.text.find("first session").unwrap()
                 < context.text.find("second session").unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn locomo_query_returns_deterministic_prompt_context() {
+        let mut backend = ReturnAllMemoryBackend::default();
+        let scope = EvalScope {
+            dataset: BenchmarkDataset::LoCoMo,
+            case_id: "locomo:sample".to_string(),
+        };
+        backend.reset(scope.clone()).await.unwrap();
+        backend
+            .ingest(event("e1", "2024-01-01T00:00:00Z"))
+            .await
+            .unwrap();
+        backend
+            .ingest(event("e2", "2024-01-01T00:00:01Z"))
+            .await
+            .unwrap();
+
+        let output = backend
+            .query(QueryInput {
+                scope,
+                question_id: "q1".to_string(),
+                query: "what".to_string(),
+                timestamp: None,
+                budget: RetrievalBudget::default(),
+                requested_longmemeval_prompt_profile: None,
+                metadata: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+
+        let context = output.prompt_context.expect("prompt context");
+        assert_eq!(context.kind, PromptContextKind::StructuredFacts);
+        assert!(context.text.contains("memory_id=e1"));
+        assert!(context.text.contains("memory_id=e2"));
     }
 }

@@ -7,14 +7,19 @@ use crate::answerer::{
     RigOpenAiCompatibleLlmAnswerer,
 };
 use crate::backend::{MemoryBackend, ReturnAllMemoryBackend};
-use crate::config::{AnswererConfig, BackendKind, parse_config_file};
+use crate::config::{AnswererConfig, BackendKind, JudgeConfig, parse_config_file};
 use crate::datasets::{
     adapt_locomo_entry, adapt_longmemeval_entry, load_locomo_dataset, load_longmemeval_dataset,
 };
-use crate::judge::{Judge, LoCoMoJudge, LongMemEvalJudge};
+use crate::judge::{
+    Judge, LoCoMoKiokuAnswerJudge, LoCoMoKiokuRetrievalJudge, LongMemEvalJudge,
+    OpenAiCompatibleJudgeRuntime,
+};
 use crate::model::{BenchmarkCase, BenchmarkDataset};
 use crate::prompt::{DefaultPromptBuilder, PromptBuilder};
-use crate::runner::{EvaluatePipeline, EvaluatePipelineResult, write_outputs};
+use crate::runner::{
+    EvaluatePipeline, EvaluatePipelineResult, LoCoMoKiokuEvaluatePipeline, write_outputs,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "evaluate")]
@@ -36,14 +41,24 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
 
     let result = match run.dataset {
         BenchmarkDataset::LoCoMo => {
-            run_with_judge(
+            let (answer_judge, retrieval_judge) = build_locomo_kioku_judges(
+                run.judge
+                    .as_ref()
+                    .context("LoCoMo runs require a judge configuration")?,
+                run.prompt
+                    .locomo_kioku
+                    .as_ref()
+                    .context("LoCoMo runs require prompt.locomo_kioku")?,
+            )?;
+            run_locomo_kioku(
                 &cases,
                 &mut *backend,
                 &prompt_builder,
                 &*answerer,
-                &LoCoMoJudge,
+                &answer_judge,
+                &retrieval_judge,
                 run.retrieval,
-                run.prompt,
+                run.prompt.clone(),
             )
             .await?
         }
@@ -55,7 +70,7 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
                 &*answerer,
                 &LongMemEvalJudge,
                 run.retrieval,
-                run.prompt,
+                run.prompt.clone(),
             )
             .await?
         }
@@ -137,6 +152,69 @@ where
         prompt_config,
     };
     pipeline.run(cases).await
+}
+
+async fn run_locomo_kioku<AJ, RJ>(
+    cases: &[BenchmarkCase],
+    backend: &mut dyn MemoryBackend,
+    prompt_builder: &dyn PromptBuilder,
+    answerer: &dyn Answerer,
+    answer_judge: &AJ,
+    retrieval_judge: &RJ,
+    budget: crate::model::RetrievalBudget,
+    prompt_config: crate::config::PromptConfig,
+) -> anyhow::Result<EvaluatePipelineResult>
+where
+    AJ: crate::judge::AnswerJudge,
+    RJ: crate::judge::RetrievalJudge,
+{
+    let mut pipeline = LoCoMoKiokuEvaluatePipeline {
+        backend,
+        prompt_builder,
+        answerer,
+        answer_judge,
+        retrieval_judge,
+        budget,
+        prompt_config,
+    };
+    pipeline.run(cases).await
+}
+
+fn build_locomo_kioku_judges(
+    config: &JudgeConfig,
+    prompt: &crate::prompt::LocomoKiokuPromptConfig,
+) -> anyhow::Result<(
+    LoCoMoKiokuAnswerJudge<RigOpenAiCompatibleLlmAnswerer>,
+    LoCoMoKiokuRetrievalJudge<RigOpenAiCompatibleLlmAnswerer>,
+)> {
+    match config {
+        JudgeConfig::OpenAiCompatible(openai) => {
+            let answer_runtime = OpenAiCompatibleJudgeRuntime::new(
+                RigOpenAiCompatibleLlmAnswerer::new(
+                    crate::answerer::RigOpenAiCompatibleConfig::from_judge_config(openai),
+                )?,
+                openai.model.clone(),
+                Some(openai.temperature),
+                Some(openai.max_output_tokens),
+            );
+            let retrieval_runtime = OpenAiCompatibleJudgeRuntime::new(
+                RigOpenAiCompatibleLlmAnswerer::new(
+                    crate::answerer::RigOpenAiCompatibleConfig::from_judge_config(openai),
+                )?,
+                openai.model.clone(),
+                Some(openai.temperature),
+                Some(openai.max_output_tokens),
+            );
+
+            Ok((
+                LoCoMoKiokuAnswerJudge::new(answer_runtime, &prompt.answer_judge_prompt_id),
+                LoCoMoKiokuRetrievalJudge::new(
+                    retrieval_runtime,
+                    &prompt.retrieval_judge_prompt_id,
+                ),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]

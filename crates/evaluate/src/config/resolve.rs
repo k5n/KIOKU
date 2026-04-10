@@ -2,15 +2,16 @@ use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 use crate::model::RetrievalBudget;
-use crate::prompt::LongMemEvalPromptConfig;
+use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalPromptConfig};
 
 use super::toml::{
-    TomlAnswererSection, TomlOpenAiCompatibleSection, TomlPromptSection, TomlRetrievalSection,
-    TomlRunConfig,
+    TomlAnswererSection, TomlJudgeSection, TomlOpenAiCompatibleSection, TomlPromptSection,
+    TomlRetrievalSection, TomlRunConfig,
 };
 use super::{
-    AnswererConfig, AnswererKind, BackendConfig, OpenAiCompatibleAnswererConfig, ParsedConfig,
-    PromptConfig, ResolvedConfig, RunConfig,
+    AnswererConfig, AnswererKind, BackendConfig, JudgeConfig, JudgeKind,
+    OpenAiCompatibleAnswererConfig, OpenAiCompatibleJudgeConfig, ParsedConfig, PromptConfig,
+    ResolvedConfig, RunConfig,
 };
 
 pub fn load_run_config(path: impl AsRef<Path>) -> anyhow::Result<RunConfig> {
@@ -61,6 +62,7 @@ impl ParsedConfig {
                 kind: self.toml.backend.kind,
             },
             answerer: resolve_answerer_config(&self.toml.answerer)?,
+            judge: resolve_judge_config(self.toml.judge.as_ref())?,
             retrieval: RetrievalBudget {
                 max_items: retrieval.max_items,
                 max_tokens: retrieval.max_tokens,
@@ -162,6 +164,39 @@ fn resolve_openai_compatible_answerer_config(
     }
 }
 
+fn resolve_judge_config(toml: Option<&TomlJudgeSection>) -> anyhow::Result<Option<JudgeConfig>> {
+    let Some(toml) = toml else {
+        return Ok(None);
+    };
+
+    match toml.kind {
+        JudgeKind::OpenAiCompatible => {
+            let openai = toml
+                .openai_compatible
+                .as_ref()
+                .context("openai-compatible judge config is missing")?;
+            Ok(Some(JudgeConfig::OpenAiCompatible(
+                resolve_openai_compatible_judge_config(openai),
+            )))
+        }
+    }
+}
+
+fn resolve_openai_compatible_judge_config(
+    openai: &TomlOpenAiCompatibleSection,
+) -> OpenAiCompatibleJudgeConfig {
+    OpenAiCompatibleJudgeConfig {
+        base_url: openai.base_url.clone(),
+        model: openai.model.clone(),
+        api_key_env: openai.api_key_env.clone(),
+        temperature: openai.temperature,
+        max_output_tokens: openai.max_output_tokens,
+        timeout_secs: openai.timeout_secs,
+        max_retries: openai.max_retries,
+        retry_backoff_ms: openai.retry_backoff_ms,
+    }
+}
+
 fn resolve_prompt_config(toml: Option<&TomlPromptSection>) -> PromptConfig {
     PromptConfig {
         longmemeval: toml.and_then(|prompt| {
@@ -171,6 +206,16 @@ fn resolve_prompt_config(toml: Option<&TomlPromptSection>) -> PromptConfig {
                 .map(|longmemeval| LongMemEvalPromptConfig {
                     answer_profile: longmemeval.answer_profile,
                     cot: longmemeval.cot,
+                })
+        }),
+        locomo_kioku: toml.and_then(|prompt| {
+            prompt
+                .locomo_kioku
+                .as_ref()
+                .map(|locomo_kioku| LocomoKiokuPromptConfig {
+                    answer_template_id: locomo_kioku.answer_template_id.clone(),
+                    answer_judge_prompt_id: locomo_kioku.answer_judge_prompt_id.clone(),
+                    retrieval_judge_prompt_id: locomo_kioku.retrieval_judge_prompt_id.clone(),
                 })
         }),
     }

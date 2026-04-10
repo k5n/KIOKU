@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::model::BenchmarkDataset;
 use crate::prompt::LongMemEvalAnswerPromptProfile;
 
-use super::{AnswererKind, BackendKind};
+use super::{AnswererKind, BackendKind, JudgeKind};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,6 +14,7 @@ pub(super) struct TomlRunConfig {
     pub(super) retrieval: Option<TomlRetrievalSection>,
     pub(super) prompt: Option<TomlPromptSection>,
     pub(super) answerer: TomlAnswererSection,
+    pub(super) judge: Option<TomlJudgeSection>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +53,7 @@ pub(super) struct TomlAnswererSection {
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlPromptSection {
     pub(super) longmemeval: Option<TomlLongMemEvalPromptSection>,
+    pub(super) locomo_kioku: Option<TomlLocomoKiokuPromptSection>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,6 +61,14 @@ pub(super) struct TomlPromptSection {
 pub(super) struct TomlLongMemEvalPromptSection {
     pub(super) answer_profile: LongMemEvalAnswerPromptProfile,
     pub(super) cot: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TomlLocomoKiokuPromptSection {
+    pub(super) answer_template_id: String,
+    pub(super) answer_judge_prompt_id: String,
+    pub(super) retrieval_judge_prompt_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +82,13 @@ pub(super) struct TomlOpenAiCompatibleSection {
     pub(super) timeout_secs: u64,
     pub(super) max_retries: u32,
     pub(super) retry_backoff_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TomlJudgeSection {
+    pub(super) kind: JudgeKind,
+    pub(super) openai_compatible: Option<TomlOpenAiCompatibleSection>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

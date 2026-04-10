@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::model::{BenchmarkDataset, RetrievalBudget};
-use crate::prompt::LongMemEvalPromptConfig;
+use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalPromptConfig};
 
 use super::toml::TomlRunConfig;
 
@@ -35,13 +35,15 @@ pub struct RunConfig {
     pub output_dir: PathBuf,
     pub backend: BackendConfig,
     pub answerer: AnswererConfig,
+    pub judge: Option<JudgeConfig>,
     pub retrieval: RetrievalBudget,
     pub prompt: PromptConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptConfig {
     pub longmemeval: Option<LongMemEvalPromptConfig>,
+    pub locomo_kioku: Option<LocomoKiokuPromptConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +113,45 @@ pub struct OpenAiCompatibleAnswererConfig {
     pub retry_backoff_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum JudgeConfig {
+    OpenAiCompatible(OpenAiCompatibleJudgeConfig),
+}
+
+impl JudgeConfig {
+    pub fn kind(&self) -> JudgeKind {
+        match self {
+            Self::OpenAiCompatible(_) => JudgeKind::OpenAiCompatible,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JudgeKind {
+    #[serde(rename = "openai-compatible")]
+    OpenAiCompatible,
+}
+
+impl JudgeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible => "openai-compatible",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenAiCompatibleJudgeConfig {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: String,
+    pub temperature: f32,
+    pub max_output_tokens: u32,
+    pub timeout_secs: u64,
+    pub max_retries: u32,
+    pub retry_backoff_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ResolvedRunMetadata {
     pub evaluate_version: &'static str,
@@ -119,6 +160,8 @@ pub struct ResolvedRunMetadata {
     pub output_dir: PathBuf,
     pub backend: ResolvedBackendMetadata,
     pub answerer: ResolvedAnswererMetadata,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge: Option<ResolvedJudgeMetadata>,
     pub retrieval: RetrievalBudget,
     pub prompt: ResolvedPromptMetadata,
 }
@@ -148,7 +191,28 @@ pub struct ResolvedOpenAiCompatibleAnswererMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ResolvedJudgeMetadata {
+    pub kind: JudgeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_compatible: Option<ResolvedOpenAiCompatibleJudgeMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ResolvedOpenAiCompatibleJudgeMetadata {
+    pub base_url: String,
+    pub model: String,
+    pub api_key_env: String,
+    pub temperature: f32,
+    pub max_output_tokens: u32,
+    pub timeout_secs: u64,
+    pub max_retries: u32,
+    pub retry_backoff_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ResolvedPromptMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub longmemeval: Option<LongMemEvalPromptConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locomo_kioku: Option<LocomoKiokuPromptConfig>,
 }

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::judge::{Judge, Judgement};
+use crate::judge::{BinaryJudgement, Judge};
 use crate::model::{BenchmarkQuestion, GeneratedAnswer};
 
 #[derive(Debug, Default)]
@@ -21,7 +21,7 @@ impl Judge for LongMemEvalJudge {
         &self,
         question: &BenchmarkQuestion,
         generated: &GeneratedAnswer,
-    ) -> anyhow::Result<Judgement> {
+    ) -> anyhow::Result<BinaryJudgement> {
         let normalized_generated = super::traits::normalize_text(&generated.text);
         let exact_match = question
             .gold_answers
@@ -35,11 +35,11 @@ impl Judge for LongMemEvalJudge {
                 .iter()
                 .map(|marker| super::traits::normalize_text(marker))
                 .any(|marker| normalized_generated.contains(&marker));
-        let is_correct = exact_match || abstention_match;
+        let passed = exact_match || abstention_match;
 
-        Ok(Judgement {
-            is_correct,
-            score: if is_correct { 1.0 } else { 0.0 },
+        Ok(BinaryJudgement {
+            passed,
+            score: if passed { 1.0 } else { 0.0 },
             label: if abstention_match {
                 "abstention_match".to_string()
             } else if exact_match {
@@ -54,7 +54,7 @@ impl Judge for LongMemEvalJudge {
 
 #[cfg(test)]
 mod tests {
-    use crate::judge::{Judge, LoCoMoJudge, LongMemEvalJudge};
+    use crate::judge::{Judge, LongMemEvalJudge};
     use crate::model::{BenchmarkQuestion, GeneratedAnswer, GoldAnswerVariant};
 
     fn question() -> BenchmarkQuestion {
@@ -75,7 +75,7 @@ mod tests {
 
     #[tokio::test]
     async fn normalized_exact_match_works() {
-        let judge = LoCoMoJudge;
+        let judge = LongMemEvalJudge;
         let judgement = judge
             .judge(
                 &question(),
@@ -87,7 +87,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(judgement.is_correct);
+        assert!(judgement.passed);
     }
 
     #[tokio::test]
@@ -108,7 +108,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(judgement.is_correct);
+        assert!(judgement.passed);
         assert_eq!(judgement.label, "abstention_match");
     }
 }
