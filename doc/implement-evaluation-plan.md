@@ -663,7 +663,7 @@ LoCoMo の F1 ベース評価や LongMemEval の official `evaluate_qa.py` / typ
 この Phase は完了済みです。  
 LoCoMo / LongMemEval の公式 prompt 互換性そのものは今後の主目標ではありませんが、prompt 構築を独立コンポーネントとして切り出せたことで、以降の benchmark-specific 仕様変更を局所化できます。
 
-### Phase 4: `locomo_kioku_v1` を実装する
+### Phase 4: `locomo_kioku_v1` を実装する （完了）
 
 次は LoCoMo の KIOKU 用評価仕様 `locomo_kioku_v1` を実装します。  
 ここでは judge と retrieval を別 Phase に分けず、**1 つの評価フローとしてまとめて実装する** 方が進めやすいです。
