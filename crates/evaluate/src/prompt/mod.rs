@@ -4,6 +4,7 @@ mod profiles;
 
 pub use answer::{
     DefaultPromptBuilder, LocomoKiokuPromptConfig, LongMemEvalAnswerPromptProfile,
-    LongMemEvalPromptConfig, PreparedPrompt, PromptBuildRequest, PromptBuilder,
+    LongMemEvalKiokuPromptConfig, LongMemEvalPromptConfig, PreparedPrompt, PromptBuildRequest,
+    PromptBuilder,
 };
 pub use context::{PromptContext, PromptContextKind};

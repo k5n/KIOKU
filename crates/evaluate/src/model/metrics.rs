@@ -78,6 +78,8 @@ pub struct MetricProvenance {
     pub retrieval_judge_prompt_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answerer_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokenizer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,6 +93,10 @@ pub struct CategoryMetrics {
 pub struct DatasetMetrics {
     pub question_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub non_abstention_question_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abstention_question_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scored_question_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overall_accuracy: Option<f32>,
@@ -99,10 +105,18 @@ pub struct DatasetMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overall_retrieval_sufficiency_accuracy: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_averaged_answer_accuracy: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_averaged_retrieval_sufficiency_accuracy: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub adversarial_accuracy: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abstention_accuracy: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abstention_answer_accuracy: Option<f32>,
     pub average_retrieved_item_count: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub average_context_token_count: Option<f32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub per_category_accuracy: BTreeMap<String, CategoryMetrics>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -111,6 +125,10 @@ pub struct DatasetMetrics {
     pub per_category_retrieval_sufficiency_accuracy: BTreeMap<String, CategoryMetrics>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub per_type_accuracy: BTreeMap<String, CategoryMetrics>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_type_answer_accuracy: BTreeMap<String, CategoryMetrics>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_type_retrieval_sufficiency_accuracy: BTreeMap<String, CategoryMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

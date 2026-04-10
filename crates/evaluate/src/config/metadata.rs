@@ -4,6 +4,7 @@ use super::{
     ResolvedOpenAiCompatibleJudgeMetadata, ResolvedPromptMetadata, ResolvedRunMetadata,
     ValidatedConfig,
 };
+use crate::token_counter::WhitespaceTokenCounter;
 
 impl ValidatedConfig {
     pub fn resolved_metadata(&self) -> anyhow::Result<ResolvedRunMetadata> {
@@ -59,8 +60,15 @@ impl ValidatedConfig {
             retrieval: self.run.retrieval,
             prompt: ResolvedPromptMetadata {
                 longmemeval: self.run.prompt.longmemeval,
+                longmemeval_kioku: self.run.prompt.longmemeval_kioku.clone(),
                 locomo_kioku: self.run.prompt.locomo_kioku.clone(),
             },
+            context_tokenizer: self
+                .run
+                .prompt
+                .longmemeval_kioku
+                .as_ref()
+                .map(|_| WhitespaceTokenCounter::NAME.to_string()),
         })
     }
 }
@@ -73,9 +81,7 @@ mod tests {
         parse_config_file,
     };
     use crate::config::test_support::write_temp_config;
-    use crate::prompt::{
-        LocomoKiokuPromptConfig, LongMemEvalAnswerPromptProfile, LongMemEvalPromptConfig,
-    };
+    use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
 
     #[test]
     fn resolved_metadata_includes_evaluate_version() {
@@ -93,9 +99,23 @@ kind = "return-all"
 [answerer]
 kind = "debug"
 
-[prompt.longmemeval]
-answer_profile = "history-chats"
-cot = false
+[judge]
+kind = "openai-compatible"
+
+[judge.openai_compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
+[prompt.longmemeval_kioku]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
 "#,
         );
 
@@ -137,9 +157,23 @@ timeout_secs = 45
 max_retries = 3
 retry_backoff_ms = 250
 
-[prompt.longmemeval]
-answer_profile = "history-chats"
-cot = false
+[judge]
+kind = "openai-compatible"
+
+[judge.openai_compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
+[prompt.longmemeval_kioku]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
 "#,
         );
 
@@ -167,13 +201,16 @@ cot = false
                 }),
             }
         );
+        assert_eq!(metadata.prompt.longmemeval, None);
         assert_eq!(
-            metadata.prompt.longmemeval,
-            Some(LongMemEvalPromptConfig {
-                answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
-                cot: false,
+            metadata.prompt.longmemeval_kioku,
+            Some(LongMemEvalKiokuPromptConfig {
+                answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
+                answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
+                retrieval_judge_prompt_id: "longmemeval.kioku.judge.retrieval.v1".to_string(),
             })
         );
+        assert_eq!(metadata.context_tokenizer.as_deref(), Some("whitespace_v1"));
     }
 
     #[test]

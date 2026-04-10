@@ -10,28 +10,38 @@ use crate::model::{
     RetrievalLogRecord,
 };
 use crate::prompt::{PromptBuildRequest, PromptBuilder};
+use crate::token_counter::TokenCounter;
 
-use super::metrics::{LoCoMoKiokuMetricInput, build_locomo_kioku_metrics};
+use super::metrics::{LongMemEvalKiokuMetricInput, build_longmemeval_kioku_metrics};
 use super::pipeline::EvaluatePipelineResult;
 
-pub struct LoCoMoKiokuEvaluatePipeline<'a, B: ?Sized, P: ?Sized, A: ?Sized, AJ: ?Sized, RJ: ?Sized>
-{
+pub struct LongMemEvalKiokuEvaluatePipeline<
+    'a,
+    B: ?Sized,
+    P: ?Sized,
+    A: ?Sized,
+    AJ: ?Sized,
+    RJ: ?Sized,
+    TC: ?Sized,
+> {
     pub backend: &'a mut B,
     pub prompt_builder: &'a P,
     pub answerer: &'a A,
     pub answer_judge: &'a AJ,
     pub retrieval_judge: &'a RJ,
+    pub token_counter: &'a TC,
     pub budget: RetrievalBudget,
     pub prompt_config: PromptConfig,
 }
 
-impl<'a, B, P, A, AJ, RJ> LoCoMoKiokuEvaluatePipeline<'a, B, P, A, AJ, RJ>
+impl<'a, B, P, A, AJ, RJ, TC> LongMemEvalKiokuEvaluatePipeline<'a, B, P, A, AJ, RJ, TC>
 where
     B: MemoryBackend + ?Sized,
     P: PromptBuilder + ?Sized,
     A: Answerer + ?Sized,
     AJ: AnswerJudge + ?Sized,
     RJ: RetrievalJudge + ?Sized,
+    TC: TokenCounter + ?Sized,
 {
     pub async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
         let dataset = cases
@@ -39,18 +49,17 @@ where
             .map(|case| case.dataset)
             .context("evaluate pipeline requires at least one case")?;
         ensure!(
-            dataset == BenchmarkDataset::LoCoMo,
-            "LoCoMoKiokuEvaluatePipeline only supports LoCoMo cases"
+            dataset == BenchmarkDataset::LongMemEval,
+            "LongMemEvalKiokuEvaluatePipeline only supports LongMemEval cases"
         );
         ensure!(
             cases.iter().all(|case| case.dataset == dataset),
             "evaluate pipeline requires all cases to use the same dataset"
         );
 
-        let locomo_prompt =
-            self.prompt_config.locomo_kioku.as_ref().context(
-                "LoCoMo locomo_kioku pipeline requires prompt.locomo_kioku configuration",
-            )?;
+        let prompt = self.prompt_config.longmemeval_kioku.as_ref().context(
+            "LongMemEval longmemeval_kioku pipeline requires prompt.longmemeval_kioku configuration",
+        )?;
 
         let mut answers = Vec::new();
         let mut retrievals = Vec::new();
@@ -68,11 +77,7 @@ where
                 self.backend.ingest(event.clone()).await?;
             }
 
-            for question in case
-                .questions
-                .iter()
-                .filter(|question| matches!(question.category, Some(1..=4)))
-            {
+            for question in &case.questions {
                 let query_output = self
                     .backend
                     .query(QueryInput {
@@ -89,7 +94,7 @@ where
                     })
                     .await?;
                 let prompt_context = query_output.prompt_context.as_ref().context(
-                    "locomo_kioku_v1 requires backend-provided prompt_context for every LoCoMo question",
+                    "longmemeval_kioku_v1 requires backend-provided prompt_context for every LongMemEval question",
                 )?;
                 let retrieval_judgement = self
                     .retrieval_judge
@@ -103,8 +108,8 @@ where
                             question,
                             retrieved: &query_output.retrieved,
                             prompt_context: Some(prompt_context),
-                            locomo_kioku_prompt: Some(locomo_prompt),
-                            longmemeval_kioku_prompt: None,
+                            locomo_kioku_prompt: None,
+                            longmemeval_kioku_prompt: Some(prompt),
                             longmemeval_prompt: None,
                         })?;
                 let generated = self
@@ -114,8 +119,10 @@ where
                     })
                     .await?;
                 let answer_judgement = self.answer_judge.judge_answer(question, &generated).await?;
-
                 let answerer_model = extract_answerer_model(&generated.metadata);
+                let context_token_count =
+                    self.token_counter.count_text_tokens(&prompt_context.text)?;
+
                 retrievals.push(RetrievalLogRecord {
                     dataset,
                     case_id: case.case_id.clone(),
@@ -143,6 +150,7 @@ where
                     evidence_session_ids: question.evidence_session_ids.clone(),
                     metadata: query_output.metadata,
                 });
+
                 answers.push(AnswerLogRecord {
                     dataset,
                     case_id: case.case_id.clone(),
@@ -162,20 +170,27 @@ where
                     }),
                     judgement_metadata: answer_judgement.metadata.clone(),
                 });
-                metric_inputs.push(LoCoMoKiokuMetricInput {
-                    category: question.category.expect("category 1-4 already filtered"),
+
+                metric_inputs.push(LongMemEvalKiokuMetricInput {
+                    question_type: question
+                        .question_type
+                        .clone()
+                        .context("LongMemEval Kioku metrics require question_type")?,
+                    is_abstention: question.is_abstention,
                     answer: answer_judgement,
                     retrieval: retrieval_judgement,
                     retrieved_count: query_output.retrieved.len(),
+                    context_token_count,
                     answerer_model,
                 });
             }
         }
 
-        let metrics = build_locomo_kioku_metrics(
+        let metrics = build_longmemeval_kioku_metrics(
             &metric_inputs,
-            &locomo_prompt.answer_judge_prompt_id,
-            &locomo_prompt.retrieval_judge_prompt_id,
+            &prompt.answer_judge_prompt_id,
+            &prompt.retrieval_judge_prompt_id,
+            self.token_counter.name(),
         );
 
         Ok(EvaluatePipelineResult {
@@ -232,9 +247,10 @@ mod tests {
         GeneratedAnswer, GoldAnswerVariant, QueryInput, QueryOutput, RetrievalBudget,
         RetrievedMemory,
     };
-    use crate::prompt::{DefaultPromptBuilder, LocomoKiokuPromptConfig, PromptContext};
+    use crate::prompt::{DefaultPromptBuilder, LongMemEvalKiokuPromptConfig, PromptContext};
+    use crate::token_counter::WhitespaceTokenCounter;
 
-    use super::LoCoMoKiokuEvaluatePipeline;
+    use super::LongMemEvalKiokuEvaluatePipeline;
 
     #[derive(Debug, Default)]
     struct RecordingAnswerJudge;
@@ -259,9 +275,9 @@ mod tests {
                     "WRONG".to_string()
                 },
                 metadata: serde_json::json!({
-                    "judge_kind": "locomo_kioku_answer_llm",
+                    "judge_kind": "longmemeval_kioku_answer_llm",
                     "judge_model": "judge-model",
-                    "judge_prompt_id": "locomo.kioku.judge.answer.v1",
+                    "judge_prompt_id": "longmemeval.kioku.judge.answer.v1",
                     "reason": "stub",
                 }),
             })
@@ -289,10 +305,10 @@ mod tests {
                 score: 1.0,
                 label: "SUFFICIENT".to_string(),
                 metadata: serde_json::json!({
-                    "judge_kind": "locomo_kioku_retrieval_llm",
+                    "judge_kind": "longmemeval_kioku_retrieval_llm",
                     "judge_model": "judge-model",
-                    "judge_prompt_id": "locomo.kioku.judge.retrieval.v1",
-                    "supported_answer": "answer",
+                    "judge_prompt_id": "longmemeval.kioku.judge.retrieval.v1",
+                    "supported_answer": "Kyoto",
                     "reason": "stub",
                 }),
             })
@@ -331,113 +347,71 @@ mod tests {
         }
     }
 
-    fn sample_case() -> BenchmarkCase {
+    fn sample_case(is_abstention: bool) -> BenchmarkCase {
         BenchmarkCase {
-            dataset: BenchmarkDataset::LoCoMo,
-            case_id: "locomo:sample".to_string(),
+            dataset: BenchmarkDataset::LongMemEval,
+            case_id: "longmemeval:sample".to_string(),
             events: vec![BenchmarkEvent {
                 event_id: "e1".to_string(),
                 stream_id: "session_1".to_string(),
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
-                content: "The meeting happened in May 2019.".to_string(),
-                speaker_id: Some("alice".to_string()),
-                speaker_name: Some("alice".to_string()),
+                content: "I moved to Kyoto.".to_string(),
+                speaker_id: Some("user".to_string()),
+                speaker_name: Some("user".to_string()),
                 metadata: serde_json::json!({
                     "session_id": "session_1",
+                    "session_date": "2024-01-01",
                 }),
             }],
-            questions: vec![
-                BenchmarkQuestion {
-                    question_id: "q1".to_string(),
-                    question: "When was the meeting?".to_string(),
-                    question_timestamp: None,
-                    gold_answers: vec!["May 2019".to_string()],
-                    evidence_event_ids: vec!["e1".to_string()],
-                    evidence_session_ids: Vec::new(),
-                    category: Some(2),
-                    question_type: None,
-                    gold_answer_variant: GoldAnswerVariant::Default,
-                    is_abstention: false,
-                    metadata: serde_json::Value::Null,
-                },
-                BenchmarkQuestion {
-                    question_id: "q2".to_string(),
-                    question: "Adversarial?".to_string(),
-                    question_timestamp: None,
-                    gold_answers: vec!["wrong".to_string()],
-                    evidence_event_ids: Vec::new(),
-                    evidence_session_ids: Vec::new(),
-                    category: Some(5),
-                    question_type: None,
-                    gold_answer_variant: GoldAnswerVariant::Adversarial,
-                    is_abstention: false,
-                    metadata: serde_json::Value::Null,
-                },
-            ],
+            questions: vec![BenchmarkQuestion {
+                question_id: "q1".to_string(),
+                question: "Where does the user live now?".to_string(),
+                question_timestamp: Some("2024-01-03T00:00:00Z".to_string()),
+                gold_answers: vec!["Kyoto".to_string()],
+                evidence_event_ids: vec!["e1".to_string()],
+                evidence_session_ids: vec!["session_1".to_string()],
+                category: None,
+                question_type: Some("knowledge-update".to_string()),
+                gold_answer_variant: GoldAnswerVariant::Default,
+                is_abstention,
+                metadata: serde_json::json!({
+                    "raw_question_date": "2024-01-03",
+                }),
+            }],
             metadata: serde_json::Value::Null,
         }
     }
 
     #[tokio::test]
-    async fn locomo_pipeline_skips_category_five_from_logs_and_metrics() {
-        let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
-        let answerer = DebugAnswerer::new("correct");
-        let answer_judge = RecordingAnswerJudge;
-        let retrieval_judge = RecordingRetrievalJudge::default();
-        let mut pipeline = LoCoMoKiokuEvaluatePipeline {
-            backend: &mut backend,
-            prompt_builder: &prompt_builder,
-            answerer: &answerer,
-            answer_judge: &answer_judge,
-            retrieval_judge: &retrieval_judge,
-            budget: RetrievalBudget::default(),
-            prompt_config: crate::config::PromptConfig {
-                longmemeval: None,
-                longmemeval_kioku: None,
-                locomo_kioku: Some(LocomoKiokuPromptConfig {
-                    answer_template_id: "locomo.kioku.answer.v1".to_string(),
-                    answer_judge_prompt_id: "locomo.kioku.judge.answer.v1".to_string(),
-                    retrieval_judge_prompt_id: "locomo.kioku.judge.retrieval.v1".to_string(),
-                }),
-            },
-        };
-
-        let result = pipeline.run(&[sample_case()]).await.unwrap();
-
-        assert_eq!(result.answers.len(), 1);
-        assert_eq!(result.retrievals.len(), 1);
-        assert_eq!(result.metrics.metrics.question_count, 1);
-        assert_eq!(result.metrics.metrics.overall_answer_accuracy, Some(1.0));
-    }
-
-    #[tokio::test]
-    async fn locomo_pipeline_fails_fast_when_prompt_context_is_missing() {
+    async fn longmemeval_pipeline_fails_fast_when_prompt_context_is_missing() {
         let mut backend = MissingPromptContextBackend;
         let prompt_builder = DefaultPromptBuilder;
         let answerer = DebugAnswerer::default();
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge::default();
-        let mut pipeline = LoCoMoKiokuEvaluatePipeline {
+        let token_counter = WhitespaceTokenCounter;
+
+        let mut pipeline = LongMemEvalKiokuEvaluatePipeline {
             backend: &mut backend,
             prompt_builder: &prompt_builder,
             answerer: &answerer,
             answer_judge: &answer_judge,
             retrieval_judge: &retrieval_judge,
+            token_counter: &token_counter,
             budget: RetrievalBudget::default(),
             prompt_config: crate::config::PromptConfig {
                 longmemeval: None,
-                longmemeval_kioku: None,
-                locomo_kioku: Some(LocomoKiokuPromptConfig {
-                    answer_template_id: "locomo.kioku.answer.v1".to_string(),
-                    answer_judge_prompt_id: "locomo.kioku.judge.answer.v1".to_string(),
-                    retrieval_judge_prompt_id: "locomo.kioku.judge.retrieval.v1".to_string(),
+                longmemeval_kioku: Some(LongMemEvalKiokuPromptConfig {
+                    answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
+                    answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
+                    retrieval_judge_prompt_id: "longmemeval.kioku.judge.retrieval.v1".to_string(),
                 }),
+                locomo_kioku: None,
             },
         };
 
         let error = pipeline
-            .run(&[sample_case()])
+            .run(&[sample_case(false)])
             .await
             .unwrap_err()
             .to_string();
@@ -446,13 +420,13 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct ContextEchoAnswerer {
-        contexts: Arc<Mutex<Vec<String>>>,
+        prompts: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
     impl Answerer for ContextEchoAnswerer {
         async fn answer(&self, request: AnswerRequest<'_>) -> anyhow::Result<GeneratedAnswer> {
-            self.contexts
+            self.prompts
                 .lock()
                 .unwrap()
                 .push(request.prompt.user_prompt.clone());
@@ -475,29 +449,74 @@ mod tests {
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge::default();
         let seen_contexts = retrieval_judge.seen_contexts.clone();
+        let token_counter = WhitespaceTokenCounter;
 
-        let mut pipeline = LoCoMoKiokuEvaluatePipeline {
+        let mut pipeline = LongMemEvalKiokuEvaluatePipeline {
             backend: &mut backend,
             prompt_builder: &prompt_builder,
             answerer: &answerer,
             answer_judge: &answer_judge,
             retrieval_judge: &retrieval_judge,
+            token_counter: &token_counter,
             budget: RetrievalBudget::default(),
             prompt_config: crate::config::PromptConfig {
                 longmemeval: None,
-                longmemeval_kioku: None,
-                locomo_kioku: Some(LocomoKiokuPromptConfig {
-                    answer_template_id: "locomo.kioku.answer.v1".to_string(),
-                    answer_judge_prompt_id: "locomo.kioku.judge.answer.v1".to_string(),
-                    retrieval_judge_prompt_id: "locomo.kioku.judge.retrieval.v1".to_string(),
+                longmemeval_kioku: Some(LongMemEvalKiokuPromptConfig {
+                    answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
+                    answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
+                    retrieval_judge_prompt_id: "longmemeval.kioku.judge.retrieval.v1".to_string(),
                 }),
+                locomo_kioku: None,
             },
         };
 
-        pipeline.run(&[sample_case()]).await.unwrap();
+        pipeline.run(&[sample_case(false)]).await.unwrap();
 
         let retrieval_context = seen_contexts.lock().unwrap()[0].clone();
-        let answer_prompt = answerer.contexts.lock().unwrap()[0].clone();
+        let answer_prompt = answerer.prompts.lock().unwrap()[0].clone();
         assert!(answer_prompt.contains(&retrieval_context));
+    }
+
+    #[tokio::test]
+    async fn longmemeval_metrics_exclude_abstention_from_main_scores() {
+        let mut backend = ReturnAllMemoryBackend::default();
+        let prompt_builder = DefaultPromptBuilder;
+        let answerer = DebugAnswerer::new("correct");
+        let answer_judge = RecordingAnswerJudge;
+        let retrieval_judge = RecordingRetrievalJudge::default();
+        let token_counter = WhitespaceTokenCounter;
+
+        let mut pipeline = LongMemEvalKiokuEvaluatePipeline {
+            backend: &mut backend,
+            prompt_builder: &prompt_builder,
+            answerer: &answerer,
+            answer_judge: &answer_judge,
+            retrieval_judge: &retrieval_judge,
+            token_counter: &token_counter,
+            budget: RetrievalBudget::default(),
+            prompt_config: crate::config::PromptConfig {
+                longmemeval: None,
+                longmemeval_kioku: Some(LongMemEvalKiokuPromptConfig {
+                    answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
+                    answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
+                    retrieval_judge_prompt_id: "longmemeval.kioku.judge.retrieval.v1".to_string(),
+                }),
+                locomo_kioku: None,
+            },
+        };
+
+        let result = pipeline
+            .run(&[sample_case(false), sample_case(true)])
+            .await
+            .unwrap();
+
+        assert_eq!(result.metrics.metrics.question_count, 2);
+        assert_eq!(
+            result.metrics.metrics.non_abstention_question_count,
+            Some(1)
+        );
+        assert_eq!(result.metrics.metrics.abstention_question_count, Some(1));
+        assert_eq!(result.metrics.metrics.overall_answer_accuracy, Some(1.0));
+        assert_eq!(result.metrics.metrics.abstention_answer_accuracy, Some(1.0));
     }
 }

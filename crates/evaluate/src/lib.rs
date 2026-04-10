@@ -7,3 +7,4 @@ pub mod judge;
 pub mod model;
 pub mod prompt;
 pub mod runner;
+pub mod token_counter;

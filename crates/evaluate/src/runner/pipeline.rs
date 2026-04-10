@@ -90,6 +90,7 @@ where
                             retrieved: &query_output.retrieved,
                             prompt_context: query_output.prompt_context.as_ref(),
                             locomo_kioku_prompt: self.prompt_config.locomo_kioku.as_ref(),
+                            longmemeval_kioku_prompt: None,
                             longmemeval_prompt: self.prompt_config.longmemeval,
                         })?;
 
@@ -223,6 +224,7 @@ mod tests {
                     answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
                     cot: false,
                 }),
+                longmemeval_kioku: None,
                 locomo_kioku: None,
             },
         };
@@ -252,6 +254,7 @@ mod tests {
                     answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
                     cot: false,
                 }),
+                longmemeval_kioku: None,
                 locomo_kioku: None,
             },
         };
@@ -314,6 +317,7 @@ mod tests {
                     answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
                     cot: false,
                 }),
+                longmemeval_kioku: None,
                 locomo_kioku: None,
             },
         };

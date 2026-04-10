@@ -111,14 +111,17 @@ fn validate_judge(
             }
         }
         BenchmarkDataset::LongMemEval => {
-            if let Some(JudgeConfig::OpenAiCompatible(openai)) = judge {
-                let _ = source
-                    .toml
-                    .judge
-                    .as_ref()
-                    .and_then(|judge| judge.openai_compatible.as_ref())
-                    .context("openai-compatible judge config is missing")?;
-                validate_openai_runtime_config(openai, "judge.openai_compatible")?;
+            let judge = judge.context("LongMemEval runs require a `[judge]` section")?;
+            match judge {
+                JudgeConfig::OpenAiCompatible(openai) => {
+                    let _ = source
+                        .toml
+                        .judge
+                        .as_ref()
+                        .and_then(|judge| judge.openai_compatible.as_ref())
+                        .context("openai-compatible judge config is missing")?;
+                    validate_openai_runtime_config(openai, "judge.openai_compatible")?;
+                }
             }
         }
     }
@@ -142,6 +145,15 @@ fn validate_prompt(
                     .is_none(),
                 "inactive prompt section `[prompt.longmemeval]` is not allowed when run.dataset = \"locomo\""
             );
+            ensure!(
+                source
+                    .toml
+                    .prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.longmemeval_kioku.as_ref())
+                    .is_none(),
+                "inactive prompt section `[prompt.longmemeval_kioku]` is not allowed when run.dataset = \"locomo\""
+            );
             let locomo_kioku = prompt.locomo_kioku.as_ref().context(
                 "LoCoMo runs require `[prompt.locomo_kioku]` with answer/judge prompt ids",
             )?;
@@ -159,9 +171,31 @@ fn validate_prompt(
             );
         }
         BenchmarkDataset::LongMemEval => {
-            let _ = prompt.longmemeval.context(
-                "LongMemEval runs require `[prompt.longmemeval]` with answer_profile and cot",
+            ensure!(
+                source
+                    .toml
+                    .prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.longmemeval.as_ref())
+                    .is_none(),
+                "inactive prompt section `[prompt.longmemeval]` is not allowed when run.dataset = \"longmemeval\""
+            );
+            let longmemeval_kioku = prompt.longmemeval_kioku.as_ref().context(
+                "LongMemEval runs require `[prompt.longmemeval_kioku]` with answer/judge prompt ids",
             )?;
+            ensure!(
+                longmemeval_kioku.answer_template_id == "longmemeval.kioku.answer.v1",
+                "prompt.longmemeval_kioku.answer_template_id must be `longmemeval.kioku.answer.v1`"
+            );
+            ensure!(
+                longmemeval_kioku.answer_judge_prompt_id == "longmemeval.kioku.judge.answer.v1",
+                "prompt.longmemeval_kioku.answer_judge_prompt_id must be `longmemeval.kioku.judge.answer.v1`"
+            );
+            ensure!(
+                longmemeval_kioku.retrieval_judge_prompt_id
+                    == "longmemeval.kioku.judge.retrieval.v1",
+                "prompt.longmemeval_kioku.retrieval_judge_prompt_id must be `longmemeval.kioku.judge.retrieval.v1`"
+            );
             ensure!(
                 source
                     .toml
@@ -300,6 +334,19 @@ kind = "return-all"
 [answerer]
 kind = "debug"
 
+[judge]
+kind = "openai-compatible"
+
+[judge.openai_compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
 [answerer.openai_compatible]
 base_url = "http://localhost:11434/v1"
 model = "test"
@@ -310,9 +357,10 @@ timeout_secs = 30
 max_retries = 2
 retry_backoff_ms = 100
 
-[prompt.longmemeval]
-answer_profile = "history-chats"
-cot = false
+[prompt.longmemeval_kioku]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
 "#,
         );
 
@@ -353,9 +401,23 @@ kind = "return-all"
 [answerer]
 kind = "debug"
 
-[prompt.longmemeval]
-answer_profile = "history-chats"
-cot = false
+[judge]
+kind = "openai-compatible"
+
+[judge.openai_compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
+[prompt.longmemeval_kioku]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
 "#,
                 dir.display()
             ),
@@ -420,7 +482,7 @@ retry_backoff_ms = 100
     }
 
     #[test]
-    fn longmemeval_requires_prompt_profile_settings() {
+    fn longmemeval_requires_kioku_prompt_and_judge_settings() {
         let path = write_temp_config(
             "longmemeval-prompt-required",
             r#"
@@ -444,6 +506,6 @@ kind = "debug"
             .validate()
             .unwrap_err()
             .to_string();
-        assert!(error.contains("[prompt.longmemeval]"));
+        assert!(error.contains("[judge]") || error.contains("[prompt.longmemeval_kioku]"));
     }
 }

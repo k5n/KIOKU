@@ -2,7 +2,9 @@ use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 use crate::model::RetrievalBudget;
-use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalPromptConfig};
+use crate::prompt::{
+    LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig, LongMemEvalPromptConfig,
+};
 
 use super::toml::{
     TomlAnswererSection, TomlJudgeSection, TomlOpenAiCompatibleSection, TomlPromptSection,
@@ -208,6 +210,15 @@ fn resolve_prompt_config(toml: Option<&TomlPromptSection>) -> PromptConfig {
                     cot: longmemeval.cot,
                 })
         }),
+        longmemeval_kioku: toml.and_then(|prompt| {
+            prompt.longmemeval_kioku.as_ref().map(|longmemeval_kioku| {
+                LongMemEvalKiokuPromptConfig {
+                    answer_template_id: longmemeval_kioku.answer_template_id.clone(),
+                    answer_judge_prompt_id: longmemeval_kioku.answer_judge_prompt_id.clone(),
+                    retrieval_judge_prompt_id: longmemeval_kioku.retrieval_judge_prompt_id.clone(),
+                }
+            })
+        }),
         locomo_kioku: toml.and_then(|prompt| {
             prompt
                 .locomo_kioku
@@ -225,7 +236,9 @@ fn resolve_prompt_config(toml: Option<&TomlPromptSection>) -> PromptConfig {
 mod tests {
     use super::parse_config_file;
     use crate::config::test_support::write_temp_config;
-    use crate::prompt::{LongMemEvalAnswerPromptProfile, LongMemEvalPromptConfig};
+    use crate::prompt::{
+        LongMemEvalAnswerPromptProfile, LongMemEvalKiokuPromptConfig, LongMemEvalPromptConfig,
+    };
 
     #[test]
     fn parses_and_resolves_paths_relative_to_config_file() {
@@ -396,6 +409,40 @@ kind = "debug"
             Some(LongMemEvalPromptConfig {
                 answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
                 cot: true,
+            })
+        );
+    }
+
+    #[test]
+    fn longmemeval_kioku_resolves_protocol_prompt_ids() {
+        let path = write_temp_config(
+            "longmemeval-kioku-prompt",
+            r#"
+[run]
+dataset = "longmemeval"
+input = "input.json"
+output_dir = "out"
+
+[backend]
+kind = "return-all"
+
+[prompt.longmemeval_kioku]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
+
+[answerer]
+kind = "debug"
+"#,
+        );
+
+        let resolved = parse_config_file(path).unwrap().into_resolved().unwrap();
+        assert_eq!(
+            resolved.run.prompt.longmemeval_kioku,
+            Some(LongMemEvalKiokuPromptConfig {
+                answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
+                answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
+                retrieval_judge_prompt_id: "longmemeval.kioku.judge.retrieval.v1".to_string(),
             })
         );
     }

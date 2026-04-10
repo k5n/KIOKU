@@ -53,6 +53,7 @@ pub(super) struct TomlAnswererSection {
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlPromptSection {
     pub(super) longmemeval: Option<TomlLongMemEvalPromptSection>,
+    pub(super) longmemeval_kioku: Option<TomlLongMemEvalKiokuPromptSection>,
     pub(super) locomo_kioku: Option<TomlLocomoKiokuPromptSection>,
 }
 
@@ -66,6 +67,14 @@ pub(super) struct TomlLongMemEvalPromptSection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlLocomoKiokuPromptSection {
+    pub(super) answer_template_id: String,
+    pub(super) answer_judge_prompt_id: String,
+    pub(super) retrieval_judge_prompt_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TomlLongMemEvalKiokuPromptSection {
     pub(super) answer_template_id: String,
     pub(super) answer_judge_prompt_id: String,
     pub(super) retrieval_judge_prompt_id: String,
