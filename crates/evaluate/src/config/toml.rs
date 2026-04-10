@@ -2,7 +2,6 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::model::BenchmarkDataset;
-use crate::prompt::LongMemEvalAnswerPromptProfile;
 
 use super::{AnswererKind, BackendKind, JudgeKind};
 
@@ -52,16 +51,8 @@ pub(super) struct TomlAnswererSection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlPromptSection {
-    pub(super) longmemeval: Option<TomlLongMemEvalPromptSection>,
     pub(super) longmemeval_kioku: Option<TomlLongMemEvalKiokuPromptSection>,
     pub(super) locomo_kioku: Option<TomlLocomoKiokuPromptSection>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct TomlLongMemEvalPromptSection {
-    pub(super) answer_profile: LongMemEvalAnswerPromptProfile,
-    pub(super) cot: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

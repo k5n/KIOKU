@@ -64,164 +64,8 @@ mod tests {
         AnswerLogRecord, BenchmarkDataset, DatasetMetrics, MetricProvenance, MetricsReport,
         RetrievalBudget, RetrievalLogRecord,
     };
-    use crate::prompt::{
-        LocomoKiokuPromptConfig, LongMemEvalAnswerPromptProfile, LongMemEvalKiokuPromptConfig,
-        LongMemEvalPromptConfig,
-    };
+    use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
     use crate::runner::EvaluatePipelineResult;
-
-    #[test]
-    fn write_outputs_persists_all_expected_artifacts() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("kioku-evaluate-test-{}", std::process::id()));
-        if temp_dir.exists() {
-            std::fs::remove_dir_all(&temp_dir).unwrap();
-        }
-
-        let result = EvaluatePipelineResult {
-            answers: vec![AnswerLogRecord {
-                dataset: BenchmarkDataset::LongMemEval,
-                case_id: "case-1".to_string(),
-                question_id: "q1".to_string(),
-                question: "Where?".to_string(),
-                generated_answer: "answer".to_string(),
-                gold_answers: vec!["answer".to_string()],
-                is_correct: true,
-                score: 1.0,
-                label: "correct".to_string(),
-                question_type: Some("multi-session".to_string()),
-                category: None,
-                is_abstention: false,
-                answer_metadata: serde_json::json!({
-                    "prompt": {
-                        "template_id": "longmemeval.answer.history_chats.v1"
-                    }
-                }),
-                judgement_metadata: serde_json::Value::Null,
-            }],
-            retrievals: vec![RetrievalLogRecord {
-                dataset: BenchmarkDataset::LongMemEval,
-                case_id: "case-1".to_string(),
-                question_id: "q1".to_string(),
-                category: None,
-                retrieved_count: 1,
-                retrieved_memory_ids: vec!["event-1".to_string()],
-                retrieved_source_event_ids: vec!["event-1".to_string()],
-                context_kind: Some("history-chats".to_string()),
-                context_text: Some("### Session 1".to_string()),
-                is_sufficient: None,
-                score: None,
-                label: None,
-                judge_metadata: serde_json::Value::Null,
-                evidence_event_ids: Vec::new(),
-                evidence_session_ids: vec!["s1".to_string()],
-                metadata: serde_json::Value::Null,
-            }],
-            metrics: MetricsReport {
-                dataset: BenchmarkDataset::LongMemEval,
-                protocol: None,
-                provenance: MetricProvenance {
-                    answer_judge_kind: None,
-                    retrieval_judge_kind: None,
-                    judge_kind: Some("longmemeval_exact_match".to_string()),
-                    metric_semantics_version: "phase1-minimal-v1".to_string(),
-                    provisional: true,
-                    locomo_overall_scope: None,
-                    answer_judge_model: None,
-                    retrieval_judge_model: None,
-                    answer_judge_prompt_id: None,
-                    retrieval_judge_prompt_id: None,
-                    answerer_model: None,
-                    context_tokenizer: None,
-                },
-                metrics: DatasetMetrics {
-                    question_count: 1,
-                    non_abstention_question_count: None,
-                    abstention_question_count: None,
-                    scored_question_count: Some(1),
-                    overall_accuracy: Some(1.0),
-                    overall_answer_accuracy: None,
-                    overall_retrieval_sufficiency_accuracy: None,
-                    task_averaged_answer_accuracy: None,
-                    task_averaged_retrieval_sufficiency_accuracy: None,
-                    adversarial_accuracy: None,
-                    abstention_accuracy: None,
-                    abstention_answer_accuracy: None,
-                    average_retrieved_item_count: 1.0,
-                    average_context_token_count: None,
-                    per_category_accuracy: Default::default(),
-                    per_category_answer_accuracy: Default::default(),
-                    per_category_retrieval_sufficiency_accuracy: Default::default(),
-                    per_type_accuracy: Default::default(),
-                    per_type_answer_accuracy: Default::default(),
-                    per_type_retrieval_sufficiency_accuracy: Default::default(),
-                },
-            },
-        };
-        let resolved_run = ResolvedRunMetadata {
-            evaluate_version: env!("CARGO_PKG_VERSION"),
-            dataset: BenchmarkDataset::LongMemEval,
-            input: temp_dir.join("input.json"),
-            output_dir: temp_dir.clone(),
-            backend: ResolvedBackendMetadata {
-                kind: BackendKind::ReturnAll,
-            },
-            answerer: ResolvedAnswererMetadata {
-                kind: AnswererKind::Debug,
-                openai_compatible: None,
-            },
-            judge: None,
-            retrieval: RetrievalBudget {
-                max_items: Some(10),
-                max_tokens: None,
-            },
-            prompt: ResolvedPromptMetadata {
-                longmemeval: Some(LongMemEvalPromptConfig {
-                    answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
-                    cot: false,
-                }),
-                longmemeval_kioku: None,
-                locomo_kioku: None,
-            },
-            context_tokenizer: None,
-        };
-
-        write_outputs(
-            &temp_dir,
-            &result,
-            br#"[run]
-dataset = "longmemeval"
-[answerer]
-kind = "debug"
-"#,
-            &resolved_run,
-        )
-        .unwrap();
-
-        let saved_config = std::fs::read(temp_dir.join("run.config.toml")).unwrap();
-        let answer_line = std::fs::read_to_string(temp_dir.join("answers.jsonl")).unwrap();
-        let answer_record: serde_json::Value =
-            serde_json::from_str(answer_line.lines().next().unwrap()).unwrap();
-        assert!(temp_dir.join("answers.jsonl").exists());
-        assert!(temp_dir.join("retrieval.jsonl").exists());
-        assert!(temp_dir.join("metrics.json").exists());
-        assert!(temp_dir.join("run.config.toml").exists());
-        assert!(temp_dir.join("run.resolved.json").exists());
-        assert_eq!(
-            saved_config,
-            br#"[run]
-dataset = "longmemeval"
-[answerer]
-kind = "debug"
-"#
-        );
-        assert_eq!(
-            answer_record["answer_metadata"]["prompt"]["template_id"],
-            "longmemeval.answer.history_chats.v1"
-        );
-
-        std::fs::remove_dir_all(temp_dir).unwrap();
-    }
 
     #[test]
     fn write_outputs_preserves_locomo_kioku_schema_without_legacy_metrics_fields() {
@@ -248,6 +92,18 @@ kind = "debug"
                 answer_metadata: serde_json::json!({
                     "template_id": "locomo.kioku.answer.v1",
                     "answerer_model": "answerer-model",
+                    "prompt": {
+                        "template_id": "locomo.kioku.answer.v1",
+                        "context_kind": "StructuredFacts"
+                    },
+                    "answerer": {
+                        "kind": "openai-compatible"
+                    },
+                    "llm": {
+                        "model_name": "answerer-model",
+                        "finish_reason": "stop",
+                        "latency_ms": 12
+                    }
                 }),
                 judgement_metadata: serde_json::json!({
                     "judge_kind": "locomo_kioku_answer_llm",
@@ -360,7 +216,6 @@ kind = "debug"
                 max_tokens: None,
             },
             prompt: ResolvedPromptMetadata {
-                longmemeval: None,
                 longmemeval_kioku: None,
                 locomo_kioku: Some(LocomoKiokuPromptConfig {
                     answer_template_id: "locomo.kioku.answer.v1".to_string(),
@@ -383,6 +238,9 @@ kind = "debug"
         )
         .unwrap();
 
+        let answer_line = std::fs::read_to_string(temp_dir.join("answers.jsonl")).unwrap();
+        let answer_record: serde_json::Value =
+            serde_json::from_str(answer_line.lines().next().unwrap()).unwrap();
         let retrieval_line = std::fs::read_to_string(temp_dir.join("retrieval.jsonl")).unwrap();
         let retrieval_record: serde_json::Value =
             serde_json::from_str(retrieval_line.lines().next().unwrap()).unwrap();
@@ -404,6 +262,23 @@ kind = "debug"
         assert!(metrics["metrics"].get("overall_accuracy").is_none());
         assert!(metrics["metrics"].get("per_category_accuracy").is_none());
         assert!(metrics["metrics"].get("per_type_accuracy").is_none());
+        assert_eq!(
+            answer_record["answer_metadata"]["prompt"]["context_kind"],
+            "StructuredFacts"
+        );
+        assert_eq!(
+            answer_record["answer_metadata"]["answerer"]["kind"],
+            "openai-compatible"
+        );
+        assert_eq!(
+            answer_record["answer_metadata"]["llm"]["model_name"],
+            "answerer-model"
+        );
+        assert!(
+            answer_record["answer_metadata"]["llm"]
+                .get("raw_response")
+                .is_none()
+        );
 
         std::fs::remove_dir_all(temp_dir).unwrap();
     }
@@ -435,6 +310,19 @@ kind = "debug"
                 answer_metadata: serde_json::json!({
                     "template_id": "longmemeval.kioku.answer.v1",
                     "answerer_model": "answerer-model",
+                    "prompt": {
+                        "template_id": "longmemeval.kioku.answer.v1",
+                        "context_kind": "HistoryChats",
+                        "protocol": "longmemeval_kioku_v1"
+                    },
+                    "answerer": {
+                        "kind": "openai-compatible"
+                    },
+                    "llm": {
+                        "model_name": "answerer-model",
+                        "finish_reason": "stop",
+                        "latency_ms": 12
+                    }
                 }),
                 judgement_metadata: serde_json::json!({
                     "judge_kind": "longmemeval_kioku_answer_llm",
@@ -452,7 +340,9 @@ kind = "debug"
                 retrieved_memory_ids: vec!["m1".to_string(), "m2".to_string()],
                 retrieved_source_event_ids: vec!["e1".to_string()],
                 context_kind: Some("history-chats".to_string()),
-                context_text: Some("### Session 1:\nSession Content:\nuser: I moved to Kyoto.".to_string()),
+                context_text: Some(
+                    "### Session 1:\nSession Content:\nuser: I moved to Kyoto.".to_string(),
+                ),
                 is_sufficient: Some(true),
                 score: Some(1.0),
                 label: Some("SUFFICIENT".to_string()),
@@ -549,7 +439,6 @@ kind = "debug"
                 max_tokens: None,
             },
             prompt: ResolvedPromptMetadata {
-                longmemeval: None,
                 longmemeval_kioku: Some(LongMemEvalKiokuPromptConfig {
                     answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
                     answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
@@ -581,9 +470,30 @@ kind = "debug"
         let metrics: serde_json::Value =
             serde_json::from_reader(File::open(temp_dir.join("metrics.json")).unwrap()).unwrap();
         let resolved: serde_json::Value =
-            serde_json::from_reader(File::open(temp_dir.join("run.resolved.json")).unwrap()).unwrap();
+            serde_json::from_reader(File::open(temp_dir.join("run.resolved.json")).unwrap())
+                .unwrap();
 
-        assert_eq!(answer_record["answer_metadata"]["template_id"], "longmemeval.kioku.answer.v1");
+        assert_eq!(
+            answer_record["answer_metadata"]["template_id"],
+            "longmemeval.kioku.answer.v1"
+        );
+        assert_eq!(
+            answer_record["answer_metadata"]["prompt"]["protocol"],
+            "longmemeval_kioku_v1"
+        );
+        assert_eq!(
+            answer_record["answer_metadata"]["answerer"]["kind"],
+            "openai-compatible"
+        );
+        assert_eq!(
+            answer_record["answer_metadata"]["llm"]["model_name"],
+            "answerer-model"
+        );
+        assert!(
+            answer_record["answer_metadata"]["llm"]
+                .get("raw_response")
+                .is_none()
+        );
         assert_eq!(
             answer_record["judgement_metadata"]["judge_kind"],
             "longmemeval_kioku_answer_llm"
@@ -609,8 +519,7 @@ kind = "debug"
             1.0
         );
         assert_eq!(
-            metrics["metrics"]["per_type_retrieval_sufficiency_accuracy"]["knowledge-update"]
-                ["accuracy"],
+            metrics["metrics"]["per_type_retrieval_sufficiency_accuracy"]["knowledge-update"]["accuracy"],
             1.0
         );
         assert_eq!(

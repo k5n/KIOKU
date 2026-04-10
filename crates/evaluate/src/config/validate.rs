@@ -141,15 +141,6 @@ fn validate_prompt(
                     .toml
                     .prompt
                     .as_ref()
-                    .and_then(|prompt| prompt.longmemeval.as_ref())
-                    .is_none(),
-                "inactive prompt section `[prompt.longmemeval]` is not allowed when run.dataset = \"locomo\""
-            );
-            ensure!(
-                source
-                    .toml
-                    .prompt
-                    .as_ref()
                     .and_then(|prompt| prompt.longmemeval_kioku.as_ref())
                     .is_none(),
                 "inactive prompt section `[prompt.longmemeval_kioku]` is not allowed when run.dataset = \"locomo\""
@@ -171,15 +162,6 @@ fn validate_prompt(
             );
         }
         BenchmarkDataset::LongMemEval => {
-            ensure!(
-                source
-                    .toml
-                    .prompt
-                    .as_ref()
-                    .and_then(|prompt| prompt.longmemeval.as_ref())
-                    .is_none(),
-                "inactive prompt section `[prompt.longmemeval]` is not allowed when run.dataset = \"longmemeval\""
-            );
             let longmemeval_kioku = prompt.longmemeval_kioku.as_ref().context(
                 "LongMemEval runs require `[prompt.longmemeval_kioku]` with answer/judge prompt ids",
             )?;

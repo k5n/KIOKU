@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::model::{BenchmarkDataset, RetrievalBudget};
-use crate::prompt::{
-    LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig, LongMemEvalPromptConfig,
-};
+use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
 
 use super::toml::TomlRunConfig;
 
@@ -44,7 +42,6 @@ pub struct RunConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptConfig {
-    pub longmemeval: Option<LongMemEvalPromptConfig>,
     pub longmemeval_kioku: Option<LongMemEvalKiokuPromptConfig>,
     pub locomo_kioku: Option<LocomoKiokuPromptConfig>,
 }
@@ -216,8 +213,6 @@ pub struct ResolvedOpenAiCompatibleJudgeMetadata {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ResolvedPromptMetadata {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub longmemeval: Option<LongMemEvalPromptConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub longmemeval_kioku: Option<LongMemEvalKiokuPromptConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]

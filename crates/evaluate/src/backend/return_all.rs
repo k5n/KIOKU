@@ -1,9 +1,9 @@
-use anyhow::{bail, ensure};
+use anyhow::ensure;
 use async_trait::async_trait;
 
 use crate::backend::MemoryBackend;
 use crate::model::{BenchmarkEvent, EvalScope, QueryInput, QueryOutput, RetrievedMemory};
-use crate::prompt::{LongMemEvalAnswerPromptProfile, PromptContext, PromptContextKind};
+use crate::prompt::{PromptContext, PromptContextKind};
 
 #[derive(Debug, Default)]
 pub struct ReturnAllMemoryBackend {
@@ -31,18 +31,6 @@ impl MemoryBackend for ReturnAllMemoryBackend {
             input.budget.max_tokens.is_none(),
             "max_tokens is not supported by return-all backend in Phase 1",
         );
-        if matches!(
-            input.requested_longmemeval_prompt_profile,
-            Some(
-                LongMemEvalAnswerPromptProfile::HistoryChatsWithFacts
-                    | LongMemEvalAnswerPromptProfile::FactsOnly
-            )
-        ) {
-            bail!(
-                "return-all backend cannot satisfy LongMemEval prompt profile `{}`",
-                input.requested_longmemeval_prompt_profile.unwrap().as_str()
-            );
-        }
 
         if let Some(scope) = &self.scope {
             ensure!(
@@ -59,29 +47,22 @@ impl MemoryBackend for ReturnAllMemoryBackend {
             selected_events = selected_events.split_off(start);
         }
 
-        let retrieved = if matches!(
-            input.requested_longmemeval_prompt_profile,
-            Some(LongMemEvalAnswerPromptProfile::NoRetrieval)
-        ) {
-            Vec::new()
-        } else {
-            selected_events
-                .into_iter()
-                .map(|event| RetrievedMemory {
-                    memory_id: event.event_id.clone(),
-                    source_event_id: Some(event.event_id.clone()),
-                    source_session_id: Some(event.stream_id.clone()),
-                    score: None,
-                    timestamp: Some(event.timestamp.clone()),
-                    content: event.content.clone(),
-                    metadata: serde_json::json!({
-                        "speaker_id": event.speaker_id,
-                        "speaker_name": event.speaker_name,
-                        "event_metadata": event.metadata,
-                    }),
-                })
-                .collect()
-        };
+        let retrieved: Vec<RetrievedMemory> = selected_events
+            .into_iter()
+            .map(|event| RetrievedMemory {
+                memory_id: event.event_id.clone(),
+                source_event_id: Some(event.event_id.clone()),
+                source_session_id: Some(event.stream_id.clone()),
+                score: None,
+                timestamp: Some(event.timestamp.clone()),
+                content: event.content.clone(),
+                metadata: serde_json::json!({
+                    "speaker_id": event.speaker_id,
+                    "speaker_name": event.speaker_name,
+                    "event_metadata": event.metadata,
+                }),
+            })
+            .collect();
         let prompt_context = build_prompt_context(&input, &retrieved, &self.events);
 
         Ok(QueryOutput {
@@ -107,26 +88,13 @@ fn build_prompt_context(
                 "backend_kind": "return_all",
             }),
         }),
-        crate::model::BenchmarkDataset::LongMemEval => {
-            if matches!(
-                input.requested_longmemeval_prompt_profile,
-                Some(LongMemEvalAnswerPromptProfile::NoRetrieval)
-            ) {
-                return Some(PromptContext {
-                    kind: PromptContextKind::NoRetrieval,
-                    text: String::new(),
-                    metadata: serde_json::Value::Null,
-                });
-            }
-
-            Some(PromptContext {
-                kind: PromptContextKind::HistoryChats,
-                text: render_history_chats(events, input.budget.max_items),
-                metadata: serde_json::json!({
-                    "backend_kind": "return_all",
-                }),
-            })
-        }
+        crate::model::BenchmarkDataset::LongMemEval => Some(PromptContext {
+            kind: PromptContextKind::HistoryChats,
+            text: render_history_chats(events, input.budget.max_items),
+            metadata: serde_json::json!({
+                "backend_kind": "return_all",
+            }),
+        }),
     }
 }
 
@@ -207,7 +175,7 @@ mod tests {
     use super::ReturnAllMemoryBackend;
     use crate::backend::MemoryBackend;
     use crate::model::{BenchmarkDataset, BenchmarkEvent, EvalScope, QueryInput, RetrievalBudget};
-    use crate::prompt::{LongMemEvalAnswerPromptProfile, PromptContextKind};
+    use crate::prompt::PromptContextKind;
 
     fn event(id: &str, timestamp: &str) -> BenchmarkEvent {
         BenchmarkEvent {
@@ -272,7 +240,6 @@ mod tests {
                     max_items: Some(2),
                     max_tokens: None,
                 },
-                requested_longmemeval_prompt_profile: None,
                 metadata: serde_json::Value::Null,
             })
             .await
@@ -287,40 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_fails_fast_for_unsupported_facts_profiles() {
-        let mut backend = ReturnAllMemoryBackend::default();
-        let scope = EvalScope {
-            dataset: BenchmarkDataset::LongMemEval,
-            case_id: "longmemeval:sample".to_string(),
-        };
-        backend.reset(scope.clone()).await.unwrap();
-        backend
-            .ingest(event("e1", "2024-01-01T00:00:00Z"))
-            .await
-            .unwrap();
-
-        let error = backend
-            .query(QueryInput {
-                scope,
-                question_id: "q1".to_string(),
-                query: "what".to_string(),
-                timestamp: None,
-                budget: RetrievalBudget::default(),
-                requested_longmemeval_prompt_profile: Some(
-                    LongMemEvalAnswerPromptProfile::FactsOnly,
-                ),
-                metadata: serde_json::Value::Null,
-            })
-            .await
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("cannot satisfy"));
-        assert!(error.contains("facts-only"));
-    }
-
-    #[tokio::test]
-    async fn query_returns_no_retrieval_context_with_empty_retrieved_items() {
+    async fn longmemeval_query_returns_history_chat_context_and_retrieved_items() {
         let mut backend = ReturnAllMemoryBackend::default();
         let scope = EvalScope {
             dataset: BenchmarkDataset::LongMemEval,
@@ -339,18 +273,15 @@ mod tests {
                 query: "what".to_string(),
                 timestamp: None,
                 budget: RetrievalBudget::default(),
-                requested_longmemeval_prompt_profile: Some(
-                    LongMemEvalAnswerPromptProfile::NoRetrieval,
-                ),
                 metadata: serde_json::Value::Null,
             })
             .await
             .unwrap();
 
-        assert!(output.retrieved.is_empty());
+        assert_eq!(output.retrieved.len(), 1);
         assert_eq!(
             output.prompt_context.as_ref().map(|context| &context.kind),
-            Some(&PromptContextKind::NoRetrieval)
+            Some(&PromptContextKind::HistoryChats)
         );
     }
 
@@ -390,9 +321,6 @@ mod tests {
                 query: "what".to_string(),
                 timestamp: None,
                 budget: RetrievalBudget::default(),
-                requested_longmemeval_prompt_profile: Some(
-                    LongMemEvalAnswerPromptProfile::HistoryChats,
-                ),
                 metadata: serde_json::Value::Null,
             })
             .await
@@ -440,7 +368,6 @@ mod tests {
                 query: "what".to_string(),
                 timestamp: None,
                 budget: RetrievalBudget::default(),
-                requested_longmemeval_prompt_profile: None,
                 metadata: serde_json::Value::Null,
             })
             .await

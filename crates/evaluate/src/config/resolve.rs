@@ -2,9 +2,7 @@ use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 use crate::model::RetrievalBudget;
-use crate::prompt::{
-    LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig, LongMemEvalPromptConfig,
-};
+use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
 
 use super::toml::{
     TomlAnswererSection, TomlJudgeSection, TomlOpenAiCompatibleSection, TomlPromptSection,
@@ -201,15 +199,6 @@ fn resolve_openai_compatible_judge_config(
 
 fn resolve_prompt_config(toml: Option<&TomlPromptSection>) -> PromptConfig {
     PromptConfig {
-        longmemeval: toml.and_then(|prompt| {
-            prompt
-                .longmemeval
-                .as_ref()
-                .map(|longmemeval| LongMemEvalPromptConfig {
-                    answer_profile: longmemeval.answer_profile,
-                    cot: longmemeval.cot,
-                })
-        }),
         longmemeval_kioku: toml.and_then(|prompt| {
             prompt.longmemeval_kioku.as_ref().map(|longmemeval_kioku| {
                 LongMemEvalKiokuPromptConfig {
@@ -236,9 +225,7 @@ fn resolve_prompt_config(toml: Option<&TomlPromptSection>) -> PromptConfig {
 mod tests {
     use super::parse_config_file;
     use crate::config::test_support::write_temp_config;
-    use crate::prompt::{
-        LongMemEvalAnswerPromptProfile, LongMemEvalKiokuPromptConfig, LongMemEvalPromptConfig,
-    };
+    use crate::prompt::LongMemEvalKiokuPromptConfig;
 
     #[test]
     fn parses_and_resolves_paths_relative_to_config_file() {
@@ -382,9 +369,9 @@ kind = "debug"
     }
 
     #[test]
-    fn longmemeval_resolves_prompt_profile_settings() {
+    fn rejects_legacy_longmemeval_prompt_section_during_parse() {
         let path = write_temp_config(
-            "longmemeval-prompt",
+            "legacy-longmemeval-prompt",
             r#"
 [run]
 dataset = "longmemeval"
@@ -403,14 +390,10 @@ kind = "debug"
 "#,
         );
 
-        let resolved = parse_config_file(path).unwrap().into_resolved().unwrap();
-        assert_eq!(
-            resolved.run.prompt.longmemeval,
-            Some(LongMemEvalPromptConfig {
-                answer_profile: LongMemEvalAnswerPromptProfile::HistoryChats,
-                cot: true,
-            })
-        );
+        let error = parse_config_file(path).unwrap_err();
+        let details = format!("{error:#}");
+        assert!(details.contains("unknown field"));
+        assert!(details.contains("longmemeval"));
     }
 
     #[test]

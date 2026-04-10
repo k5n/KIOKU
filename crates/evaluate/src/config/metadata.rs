@@ -59,7 +59,6 @@ impl ValidatedConfig {
             judge,
             retrieval: self.run.retrieval,
             prompt: ResolvedPromptMetadata {
-                longmemeval: self.run.prompt.longmemeval,
                 longmemeval_kioku: self.run.prompt.longmemeval_kioku.clone(),
                 locomo_kioku: self.run.prompt.locomo_kioku.clone(),
             },
@@ -201,7 +200,6 @@ retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
                 }),
             }
         );
-        assert_eq!(metadata.prompt.longmemeval, None);
         assert_eq!(
             metadata.prompt.longmemeval_kioku,
             Some(LongMemEvalKiokuPromptConfig {

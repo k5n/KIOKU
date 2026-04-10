@@ -218,16 +218,21 @@ mod tests {
         assert!(generated.metadata["llm"]["latency_ms"].as_u64().is_some());
         assert_eq!(
             generated.metadata["prompt"]["template_id"],
-            "longmemeval.answer.history_chats.v1"
+            "longmemeval.kioku.answer.v1"
         );
 
         let requests = llm.captured_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].temperature, Some(0.2));
         assert_eq!(requests[0].max_output_tokens, Some(64));
-        assert_eq!(requests[0].metadata["requested_profile"], "history-chats");
-        assert!(requests[0].user_prompt.contains("History Chats:"));
-        assert!(requests[0].system_prompt.is_none());
+        assert_eq!(requests[0].metadata["protocol"], "longmemeval_kioku_v1");
+        assert!(requests[0].user_prompt.contains("Memory context:"));
+        assert_eq!(
+            requests[0].system_prompt.as_deref(),
+            Some(
+                "You answer questions using only the provided memory context.\nTreat the provided current date as the reference time for the question.\nFor knowledge-update questions, prefer the latest state supported by the memory context.\nDo not use external knowledge.\nIf the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nDo not explain your reasoning.\nReturn only the final answer as a short phrase."
+            )
+        );
     }
 
     #[tokio::test]
@@ -258,20 +263,20 @@ mod tests {
 
     fn sample_request() -> AnswerRequest<'static> {
         let prompt = Box::leak(Box::new(PreparedPrompt {
-            system_prompt: None,
+            system_prompt: Some(
+                "You answer questions using only the provided memory context.\nTreat the provided current date as the reference time for the question.\nFor knowledge-update questions, prefer the latest state supported by the memory context.\nDo not use external knowledge.\nIf the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nDo not explain your reasoning.\nReturn only the final answer as a short phrase."
+                    .to_string(),
+            ),
             user_prompt: concat!(
-                "I will give you several history chats between you and a user. ",
-                "Please answer the question based on the relevant chat history.\n\n\n",
-                "History Chats:\n\n### Session 1:\nSession Date: 2024-01-01\n",
+                "Memory context:\n### Session 1:\nSession Date: 2024-01-01\n",
                 "Session Content:\nuser: The user said they moved to Kyoto last month.\n\n",
-                "Current Date: 2024-01-03\nQuestion: Where does the user live now?\nAnswer:"
+                "Current date:\n2024-01-03\n\nQuestion:\nWhere does the user live now?"
             )
             .to_string(),
-            template_id: "longmemeval.answer.history_chats.v1".to_string(),
+            template_id: "longmemeval.kioku.answer.v1".to_string(),
             metadata: serde_json::json!({
-                "requested_profile": "history-chats",
-                "resolved_profile": "history-chats",
                 "context_kind": "HistoryChats",
+                "protocol": "longmemeval_kioku_v1",
             }),
         }));
 

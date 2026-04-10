@@ -1,9 +1,9 @@
-use anyhow::{Context, ensure};
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use super::profiles::{locomo, longmemeval};
-use super::{PromptContext, PromptContextKind};
+use super::PromptContext;
+use super::profiles::locomo;
 use crate::model::{BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, RetrievedMemory};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,32 +18,6 @@ pub struct LongMemEvalKiokuPromptConfig {
     pub answer_template_id: String,
     pub answer_judge_prompt_id: String,
     pub retrieval_judge_prompt_id: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LongMemEvalAnswerPromptProfile {
-    NoRetrieval,
-    HistoryChats,
-    HistoryChatsWithFacts,
-    FactsOnly,
-}
-
-impl LongMemEvalAnswerPromptProfile {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::NoRetrieval => "no-retrieval",
-            Self::HistoryChats => "history-chats",
-            Self::HistoryChatsWithFacts => "history-chats-with-facts",
-            Self::FactsOnly => "facts-only",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LongMemEvalPromptConfig {
-    pub answer_profile: LongMemEvalAnswerPromptProfile,
-    pub cot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,7 +57,6 @@ pub struct PromptBuildRequest<'a> {
     pub prompt_context: Option<&'a PromptContext>,
     pub locomo_kioku_prompt: Option<&'a LocomoKiokuPromptConfig>,
     pub longmemeval_kioku_prompt: Option<&'a LongMemEvalKiokuPromptConfig>,
-    pub longmemeval_prompt: Option<LongMemEvalPromptConfig>,
 }
 
 pub trait PromptBuilder: Send + Sync {
@@ -143,11 +116,10 @@ fn build_locomo_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<Prepar
 }
 
 fn build_longmemeval_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<PreparedPrompt> {
-    if let Some(config) = request.longmemeval_kioku_prompt {
-        return build_longmemeval_kioku_prompt(request, config);
-    }
-
-    build_legacy_longmemeval_prompt(request)
+    let config = request.longmemeval_kioku_prompt.context(
+        "LongMemEval prompt config is required to build longmemeval_kioku answer prompts",
+    )?;
+    build_longmemeval_kioku_prompt(request, config)
 }
 
 fn build_longmemeval_kioku_prompt(
@@ -174,38 +146,6 @@ fn build_longmemeval_kioku_prompt(
     })
 }
 
-fn build_legacy_longmemeval_prompt(
-    request: PromptBuildRequest<'_>,
-) -> anyhow::Result<PreparedPrompt> {
-    let config = request
-        .longmemeval_prompt
-        .context("LongMemEval prompt config is required to build answer prompts")?;
-    let resolved_context = resolve_longmemeval_context(
-        config.answer_profile,
-        request.prompt_context,
-        request.retrieved,
-    )?;
-    let current_date = longmemeval_question_date(request.question)?;
-    let user_prompt = longmemeval::render_prompt(
-        config.answer_profile,
-        config.cot,
-        &resolved_context.text,
-        current_date,
-        &request.question.question,
-    );
-
-    Ok(PreparedPrompt {
-        system_prompt: None,
-        user_prompt,
-        template_id: longmemeval::template_id(config.answer_profile, config.cot).to_string(),
-        metadata: json!({
-            "requested_profile": config.answer_profile.as_str(),
-            "resolved_profile": config.answer_profile.as_str(),
-            "context_kind": resolved_context.kind,
-        }),
-    })
-}
-
 fn longmemeval_question_date(question: &BenchmarkQuestion) -> anyhow::Result<&str> {
     question
         .metadata
@@ -215,106 +155,11 @@ fn longmemeval_question_date(question: &BenchmarkQuestion) -> anyhow::Result<&st
         .context("LongMemEval question is missing prompt-ready question date metadata")
 }
 
-fn resolve_longmemeval_context(
-    requested_profile: LongMemEvalAnswerPromptProfile,
-    prompt_context: Option<&PromptContext>,
-    retrieved: &[RetrievedMemory],
-) -> anyhow::Result<PromptContext> {
-    match requested_profile {
-        LongMemEvalAnswerPromptProfile::NoRetrieval => {
-            if let Some(context) = prompt_context {
-                ensure!(
-                    context.kind == PromptContextKind::NoRetrieval,
-                    "LongMemEval no-retrieval prompt requires NoRetrieval context, got {:?}",
-                    context.kind
-                );
-                Ok(context.clone())
-            } else {
-                Ok(PromptContext {
-                    kind: PromptContextKind::NoRetrieval,
-                    text: String::new(),
-                    metadata: Value::Null,
-                })
-            }
-        }
-        LongMemEvalAnswerPromptProfile::HistoryChats => {
-            if let Some(context) = prompt_context {
-                ensure!(
-                    context.kind == PromptContextKind::HistoryChats,
-                    "LongMemEval history-chats prompt requires HistoryChats context, got {:?}",
-                    context.kind
-                );
-                Ok(context.clone())
-            } else {
-                Ok(PromptContext {
-                    kind: PromptContextKind::HistoryChats,
-                    text: render_retrieved_memories(retrieved),
-                    metadata: Value::Null,
-                })
-            }
-        }
-        LongMemEvalAnswerPromptProfile::HistoryChatsWithFacts => {
-            let context = prompt_context.context(
-                "LongMemEval history-chats-with-facts prompt requires backend-provided prompt context",
-            )?;
-            ensure!(
-                context.kind == PromptContextKind::HistoryChatsWithFacts,
-                "LongMemEval history-chats-with-facts prompt requires HistoryChatsWithFacts context, got {:?}",
-                context.kind
-            );
-            Ok(context.clone())
-        }
-        LongMemEvalAnswerPromptProfile::FactsOnly => {
-            let context = prompt_context.context(
-                "LongMemEval facts-only prompt requires backend-provided prompt context",
-            )?;
-            ensure!(
-                context.kind == PromptContextKind::FactsOnly,
-                "LongMemEval facts-only prompt requires FactsOnly context, got {:?}",
-                context.kind
-            );
-            Ok(context.clone())
-        }
-    }
-}
-
-fn render_retrieved_memories(retrieved: &[RetrievedMemory]) -> String {
-    if retrieved.is_empty() {
-        return "(none)".to_string();
-    }
-
-    retrieved
-        .iter()
-        .enumerate()
-        .map(|(index, memory)| {
-            let speaker = memory
-                .metadata
-                .get("speaker_name")
-                .and_then(Value::as_str)
-                .or_else(|| memory.metadata.get("speaker_id").and_then(Value::as_str))
-                .unwrap_or("unknown-speaker");
-            format!(
-                "{}. [memory_id={} session={} timestamp={} speaker={}]\n{}",
-                index + 1,
-                memory.memory_id,
-                memory
-                    .source_session_id
-                    .as_deref()
-                    .unwrap_or("unknown-session"),
-                memory.timestamp.as_deref().unwrap_or("unknown-timestamp"),
-                speaker,
-                memory.content
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        DefaultPromptBuilder, LocomoKiokuPromptConfig, LongMemEvalAnswerPromptProfile,
-        LongMemEvalKiokuPromptConfig, LongMemEvalPromptConfig, PromptBuildRequest, PromptBuilder,
+        DefaultPromptBuilder, LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig,
+        PromptBuildRequest, PromptBuilder,
     };
     use crate::model::{
         BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant, RetrievedMemory,
@@ -341,7 +186,6 @@ mod tests {
                 prompt_context: Some(&context),
                 locomo_kioku_prompt: Some(&sample_locomo_prompt_config()),
                 longmemeval_kioku_prompt: None,
-                longmemeval_prompt: None,
             })
             .unwrap();
 
@@ -370,7 +214,6 @@ mod tests {
                 prompt_context: None,
                 locomo_kioku_prompt: Some(&sample_locomo_prompt_config()),
                 longmemeval_kioku_prompt: None,
-                longmemeval_prompt: None,
             })
             .unwrap_err()
             .to_string();
@@ -398,7 +241,6 @@ mod tests {
                 prompt_context: Some(&context),
                 locomo_kioku_prompt: None,
                 longmemeval_kioku_prompt: Some(&sample_longmemeval_kioku_prompt_config()),
-                longmemeval_prompt: None,
             })
             .unwrap();
 
@@ -426,7 +268,6 @@ mod tests {
                 prompt_context: None,
                 locomo_kioku_prompt: None,
                 longmemeval_kioku_prompt: Some(&sample_longmemeval_kioku_prompt_config()),
-                longmemeval_prompt: None,
             })
             .unwrap_err()
             .to_string();
@@ -435,24 +276,10 @@ mod tests {
     }
 
     #[test]
-    fn longmemeval_no_retrieval_uses_no_retrieval_template() {
-        let prompt =
-            build_longmemeval_prompt(LongMemEvalAnswerPromptProfile::NoRetrieval, false, None);
-
-        assert_eq!(prompt.template_id, "longmemeval.answer.no_retrieval.v1");
-        assert!(!prompt.user_prompt.contains("History Chats:"));
-    }
-
-    #[test]
-    fn longmemeval_no_retrieval_rejects_wrong_context_kind() {
+    fn longmemeval_rejects_missing_kioku_prompt_config() {
         let builder = DefaultPromptBuilder;
         let case = sample_case(BenchmarkDataset::LongMemEval);
         let question = sample_question(BenchmarkDataset::LongMemEval, None);
-        let context = PromptContext {
-            kind: PromptContextKind::HistoryChats,
-            text: "### Session 1".to_string(),
-            metadata: serde_json::Value::Null,
-        };
 
         let error = builder
             .build_answer_prompt(PromptBuildRequest {
@@ -460,130 +287,14 @@ mod tests {
                 case: &case,
                 question: &question,
                 retrieved: &sample_retrieved(),
-                prompt_context: Some(&context),
+                prompt_context: None,
                 locomo_kioku_prompt: None,
                 longmemeval_kioku_prompt: None,
-                longmemeval_prompt: Some(LongMemEvalPromptConfig {
-                    answer_profile: LongMemEvalAnswerPromptProfile::NoRetrieval,
-                    cot: false,
-                }),
             })
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("NoRetrieval context"));
-    }
-
-    #[test]
-    fn longmemeval_history_chats_uses_history_template() {
-        let prompt = build_longmemeval_prompt(
-            LongMemEvalAnswerPromptProfile::HistoryChats,
-            false,
-            Some(PromptContext {
-                kind: PromptContextKind::HistoryChats,
-                text: "### Session 1".to_string(),
-                metadata: serde_json::Value::Null,
-            }),
-        );
-
-        assert_eq!(prompt.template_id, "longmemeval.answer.history_chats.v1");
-        assert!(prompt.user_prompt.contains("relevant chat history"));
-    }
-
-    #[test]
-    fn longmemeval_history_chats_with_facts_uses_facts_template() {
-        let prompt = build_longmemeval_prompt(
-            LongMemEvalAnswerPromptProfile::HistoryChatsWithFacts,
-            false,
-            Some(PromptContext {
-                kind: PromptContextKind::HistoryChatsWithFacts,
-                text: "fact summary".to_string(),
-                metadata: serde_json::Value::Null,
-            }),
-        );
-
-        assert_eq!(
-            prompt.template_id,
-            "longmemeval.answer.history_chats_with_facts.v1"
-        );
-        assert!(prompt.user_prompt.contains("relevant user facts extracted"));
-    }
-
-    #[test]
-    fn longmemeval_facts_only_uses_facts_only_template() {
-        let prompt = build_longmemeval_prompt(
-            LongMemEvalAnswerPromptProfile::FactsOnly,
-            false,
-            Some(PromptContext {
-                kind: PromptContextKind::FactsOnly,
-                text: "fact: user moved".to_string(),
-                metadata: serde_json::Value::Null,
-            }),
-        );
-
-        assert_eq!(prompt.template_id, "longmemeval.answer.facts_only.v1");
-        assert!(prompt.user_prompt.contains("based on the relevant facts"));
-    }
-
-    #[test]
-    fn longmemeval_cot_templates_include_step_by_step_instruction() {
-        let prompt = build_longmemeval_prompt(
-            LongMemEvalAnswerPromptProfile::HistoryChats,
-            true,
-            Some(PromptContext {
-                kind: PromptContextKind::HistoryChats,
-                text: "### Session 1".to_string(),
-                metadata: serde_json::Value::Null,
-            }),
-        );
-
-        assert!(prompt.user_prompt.contains("Answer (step by step):"));
-        assert!(
-            prompt
-                .user_prompt
-                .contains("first extract all the relevant information")
-        );
-    }
-
-    #[test]
-    fn longmemeval_prompt_includes_current_date() {
-        let prompt = build_longmemeval_prompt(
-            LongMemEvalAnswerPromptProfile::HistoryChats,
-            false,
-            Some(PromptContext {
-                kind: PromptContextKind::HistoryChats,
-                text: "### Session 1".to_string(),
-                metadata: serde_json::Value::Null,
-            }),
-        );
-
-        assert!(prompt.user_prompt.contains("Current Date: 2024-01-03"));
-    }
-
-    fn build_longmemeval_prompt(
-        profile: LongMemEvalAnswerPromptProfile,
-        cot: bool,
-        prompt_context: Option<PromptContext>,
-    ) -> super::PreparedPrompt {
-        let builder = DefaultPromptBuilder;
-        let case = sample_case(BenchmarkDataset::LongMemEval);
-        let question = sample_question(BenchmarkDataset::LongMemEval, None);
-
-        builder
-            .build_answer_prompt(PromptBuildRequest {
-                dataset: BenchmarkDataset::LongMemEval,
-                case: &case,
-                question: &question,
-                retrieved: &sample_retrieved(),
-                prompt_context: prompt_context.as_ref(),
-                locomo_kioku_prompt: None,
-                longmemeval_kioku_prompt: None,
-                longmemeval_prompt: Some(LongMemEvalPromptConfig {
-                    answer_profile: profile,
-                    cot,
-                }),
-            })
-            .unwrap()
+        assert!(error.contains("LongMemEval prompt config is required"));
     }
 
     fn sample_case(dataset: BenchmarkDataset) -> BenchmarkCase {

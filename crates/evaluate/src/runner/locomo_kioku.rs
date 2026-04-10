@@ -1,6 +1,3 @@
-use anyhow::{Context, ensure};
-use serde_json::{Value, json};
-
 use crate::answerer::Answerer;
 use crate::backend::MemoryBackend;
 use crate::config::PromptConfig;
@@ -10,9 +7,13 @@ use crate::model::{
     RetrievalLogRecord,
 };
 use crate::prompt::{PromptBuildRequest, PromptBuilder};
+use anyhow::{Context, ensure};
 
+use super::helpers::{
+    context_kind_name, extract_answerer_model, sanitize_answer_metadata, stable_unique_strings,
+};
 use super::metrics::{LoCoMoKiokuMetricInput, build_locomo_kioku_metrics};
-use super::pipeline::EvaluatePipelineResult;
+use super::result::EvaluatePipelineResult;
 
 pub struct LoCoMoKiokuEvaluatePipeline<'a, B: ?Sized, P: ?Sized, A: ?Sized, AJ: ?Sized, RJ: ?Sized>
 {
@@ -84,7 +85,6 @@ where
                         query: question.question.clone(),
                         timestamp: question.question_timestamp.clone(),
                         budget: self.budget,
-                        requested_longmemeval_prompt_profile: None,
                         metadata: serde_json::Value::Null,
                     })
                     .await?;
@@ -105,7 +105,6 @@ where
                             prompt_context: Some(prompt_context),
                             locomo_kioku_prompt: Some(locomo_prompt),
                             longmemeval_kioku_prompt: None,
-                            longmemeval_prompt: None,
                         })?;
                 let generated = self
                     .answerer
@@ -156,10 +155,11 @@ where
                     question_type: question.question_type.clone(),
                     category: question.category,
                     is_abstention: question.is_abstention,
-                    answer_metadata: json!({
-                        "template_id": prepared_prompt.template_id,
-                        "answerer_model": answerer_model,
-                    }),
+                    answer_metadata: sanitize_answer_metadata(
+                        generated.metadata,
+                        &prepared_prompt.template_id,
+                        &answerer_model,
+                    ),
                     judgement_metadata: answer_judgement.metadata.clone(),
                 });
                 metric_inputs.push(LoCoMoKiokuMetricInput {
@@ -184,39 +184,6 @@ where
             metrics,
         })
     }
-}
-
-fn extract_answerer_model(metadata: &Value) -> String {
-    metadata
-        .get("llm")
-        .and_then(|llm| llm.get("model_name"))
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-        .or_else(|| {
-            metadata
-                .get("answerer")
-                .and_then(|answerer| answerer.get("kind"))
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-        })
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn stable_unique_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut output = Vec::new();
-    for value in values {
-        if !output.contains(&value) {
-            output.push(value);
-        }
-    }
-    output
-}
-
-fn context_kind_name(context: &crate::prompt::PromptContext) -> String {
-    serde_json::to_value(&context.kind)
-        .ok()
-        .and_then(|value| value.as_str().map(ToString::to_string))
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]
@@ -393,7 +360,6 @@ mod tests {
             retrieval_judge: &retrieval_judge,
             budget: RetrievalBudget::default(),
             prompt_config: crate::config::PromptConfig {
-                longmemeval: None,
                 longmemeval_kioku: None,
                 locomo_kioku: Some(LocomoKiokuPromptConfig {
                     answer_template_id: "locomo.kioku.answer.v1".to_string(),
@@ -426,7 +392,6 @@ mod tests {
             retrieval_judge: &retrieval_judge,
             budget: RetrievalBudget::default(),
             prompt_config: crate::config::PromptConfig {
-                longmemeval: None,
                 longmemeval_kioku: None,
                 locomo_kioku: Some(LocomoKiokuPromptConfig {
                     answer_template_id: "locomo.kioku.answer.v1".to_string(),
@@ -484,7 +449,6 @@ mod tests {
             retrieval_judge: &retrieval_judge,
             budget: RetrievalBudget::default(),
             prompt_config: crate::config::PromptConfig {
-                longmemeval: None,
                 longmemeval_kioku: None,
                 locomo_kioku: Some(LocomoKiokuPromptConfig {
                     answer_template_id: "locomo.kioku.answer.v1".to_string(),
