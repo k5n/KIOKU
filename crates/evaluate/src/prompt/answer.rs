@@ -81,11 +81,12 @@ impl PromptBuilder for DefaultPromptBuilder {
 }
 
 const LONGMEMEVAL_KIOKU_ANSWER_SYSTEM_PROMPT: &str = concat!(
-    "You answer questions using only the provided memory context.\n",
+    "You answer questions using only the provided memory prompt.\n",
+    "The memory prompt may use any textual format chosen by the memory system.\n",
     "Treat the provided current date as the reference time for the question.\n",
-    "For knowledge-update questions, prefer the latest state supported by the memory context.\n",
+    "For knowledge-update questions, prefer the latest state supported by the memory prompt.\n",
     "Do not use external knowledge.\n",
-    "If the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\n",
+    "If the memory prompt is insufficient, answer exactly: NOT_ENOUGH_MEMORY\n",
     "Do not explain your reasoning.\n",
     "Return only the final answer as a short phrase."
 );
@@ -97,7 +98,7 @@ fn build_locomo_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<Prepar
     let resolved_context = request.prompt_context;
 
     let user_prompt = format!(
-        "Memory context:\n{}\n\nQuestion:\n{}",
+        "Memory prompt:\n{}\n\nQuestion:\n{}",
         resolved_context.text, request.question.question
     );
 
@@ -105,9 +106,7 @@ fn build_locomo_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<Prepar
         system_prompt: Some(locomo::KIOKU_ANSWER_SYSTEM_PROMPT.to_string()),
         user_prompt,
         template_id: config.answer_template_id.clone(),
-        metadata: json!({
-            "context_kind": resolved_context.kind,
-        }),
+        metadata: prompt_metadata(resolved_context, json!({})),
     })
 }
 
@@ -125,7 +124,7 @@ fn build_longmemeval_kioku_prompt(
     let resolved_context = request.prompt_context;
     let current_date = longmemeval_question_date(request.question)?;
     let user_prompt = format!(
-        "Memory context:\n{}\n\nCurrent date:\n{}\n\nQuestion:\n{}",
+        "Memory prompt:\n{}\n\nCurrent date:\n{}\n\nQuestion:\n{}",
         resolved_context.text, current_date, request.question.question
     );
 
@@ -133,11 +132,30 @@ fn build_longmemeval_kioku_prompt(
         system_prompt: Some(LONGMEMEVAL_KIOKU_ANSWER_SYSTEM_PROMPT.to_string()),
         user_prompt,
         template_id: config.answer_template_id.clone(),
-        metadata: json!({
-            "context_kind": resolved_context.kind,
-            "protocol": "longmemeval_kioku_v1",
-        }),
+        metadata: prompt_metadata(
+            resolved_context,
+            json!({
+                "protocol": "longmemeval_kioku_v1",
+            }),
+        ),
     })
+}
+
+fn prompt_metadata(context: &PromptContext, metadata: Value) -> Value {
+    let mut merged = match metadata {
+        Value::Object(map) => map,
+        Value::Null => Map::new(),
+        other => {
+            let mut map = Map::new();
+            map.insert("details".to_string(), other);
+            map
+        }
+    };
+    merged.insert("context_kind".to_string(), json!(context.kind));
+    if let Value::Object(context_metadata) = &context.metadata {
+        merged.extend(context_metadata.clone());
+    }
+    Value::Object(merged)
 }
 
 fn longmemeval_question_date(question: &BenchmarkQuestion) -> anyhow::Result<&str> {
@@ -164,7 +182,7 @@ mod tests {
         let case = sample_case(BenchmarkDataset::LoCoMo);
         let question = sample_question(BenchmarkDataset::LoCoMo, Some(4));
         let context = PromptContext {
-            kind: PromptContextKind::StructuredFacts,
+            kind: PromptContextKind::MemoryPrompt,
             text: "1. [fact] The user moved to Kyoto.".to_string(),
             metadata: serde_json::Value::Null,
         };
@@ -184,10 +202,11 @@ mod tests {
         assert_eq!(
             prompt.system_prompt.as_deref(),
             Some(
-                "You answer questions using only the provided memory context.\nDo not use external knowledge.\nIf the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nReturn only the final answer as a short phrase."
+                "You answer questions using only the provided memory prompt.\nThe memory prompt may use any textual format chosen by the memory system.\nDo not use external knowledge.\nIf the memory prompt is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nReturn only the final answer as a short phrase."
             )
         );
-        assert!(prompt.user_prompt.contains("Memory context:"));
+        assert!(prompt.user_prompt.contains("Memory prompt:"));
+        assert_eq!(prompt.metadata["context_kind"], "memory-prompt");
     }
 
     #[test]
@@ -196,7 +215,7 @@ mod tests {
         let case = sample_case(BenchmarkDataset::LongMemEval);
         let question = sample_question(BenchmarkDataset::LongMemEval, None);
         let context = PromptContext {
-            kind: PromptContextKind::HistoryChats,
+            kind: PromptContextKind::MemoryPrompt,
             text: "### Session 1\nSession Content:\nuser: moved to Kyoto".to_string(),
             metadata: serde_json::Value::Null,
         };
@@ -217,8 +236,9 @@ mod tests {
             prompt.system_prompt.as_deref(),
             Some(super::LONGMEMEVAL_KIOKU_ANSWER_SYSTEM_PROMPT)
         );
-        assert!(prompt.user_prompt.contains("Memory context:"));
+        assert!(prompt.user_prompt.contains("Memory prompt:"));
         assert!(prompt.user_prompt.contains("Current date:\n2024-01-03"));
+        assert_eq!(prompt.metadata["context_kind"], "memory-prompt");
     }
 
     #[test]
@@ -227,7 +247,7 @@ mod tests {
         let case = sample_case(BenchmarkDataset::LongMemEval);
         let question = sample_question(BenchmarkDataset::LongMemEval, None);
         let context = PromptContext {
-            kind: PromptContextKind::HistoryChats,
+            kind: PromptContextKind::MemoryPrompt,
             text: "context".to_string(),
             metadata: serde_json::Value::Null,
         };

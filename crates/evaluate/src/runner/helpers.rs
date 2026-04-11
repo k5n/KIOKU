@@ -48,6 +48,20 @@ pub(super) fn sanitize_answer_metadata(
     metadata
 }
 
+pub(super) fn merge_metadata(primary: &Value, secondary: &Value) -> Value {
+    match (primary, secondary) {
+        (Value::Object(primary), Value::Object(secondary)) => {
+            let mut merged = primary.clone();
+            merged.extend(secondary.clone());
+            Value::Object(merged)
+        }
+        (Value::Object(primary), Value::Null) => Value::Object(primary.clone()),
+        (Value::Null, Value::Object(secondary)) => Value::Object(secondary.clone()),
+        (Value::Null, Value::Null) => Value::Null,
+        _ => primary.clone(),
+    }
+}
+
 pub(super) fn context_kind_name(context: &PromptContext) -> String {
     serde_json::to_value(&context.kind)
         .ok()

@@ -13,7 +13,8 @@ const ANSWER_JUDGE_KIND: &str = "longmemeval_kioku_answer_llm";
 
 const RETRIEVAL_SYSTEM_PROMPT: &str = concat!(
     "You evaluate retrieval sufficiency for the LongMemEval Kioku protocol.\n",
-    "Judge whether the provided memory context alone is sufficient to answer the question with a gold-equivalent answer.\n",
+    "Judge whether the provided memory prompt alone is sufficient to answer the question with a gold-equivalent answer.\n",
+    "The memory prompt may use any textual format chosen by the memory system.\n",
     "Use the provided question type rubric and abstention instructions.\n",
     "Return JSON only."
 );
@@ -21,6 +22,7 @@ const RETRIEVAL_SYSTEM_PROMPT: &str = concat!(
 const ANSWER_SYSTEM_PROMPT: &str = concat!(
     "You evaluate answer correctness for the LongMemEval Kioku protocol.\n",
     "Judge whether the generated answer is correct under the provided question type rubric.\n",
+    "The memory system may have used any textual memory-prompt format.\n",
     "Use the abstention instructions when the question is marked as abstention.\n",
     "Return JSON only."
 );
@@ -171,7 +173,7 @@ fn render_retrieval_user_prompt(
             "Is abstention:\n{}\n\n",
             "Type-specific rubric:\n{}\n\n",
             "Abstention instructions:\n{}\n\n",
-            "Memory context:\n{}\n\n",
+            "Memory prompt:\n{}\n\n",
             "Return JSON with:\n",
             "- label: SUFFICIENT or INSUFFICIENT\n",
             "- supported_answer: short answer or null\n",
@@ -374,7 +376,7 @@ mod tests {
             .judge_retrieval(
                 &sample_question(),
                 &PromptContext {
-                    kind: PromptContextKind::HistoryChats,
+                    kind: PromptContextKind::MemoryPrompt,
                     text: "user: I moved to Kyoto last month.".to_string(),
                     metadata: serde_json::Value::Null,
                 },
@@ -459,7 +461,7 @@ mod tests {
             .judge_retrieval(
                 &question,
                 &PromptContext {
-                    kind: PromptContextKind::HistoryChats,
+                    kind: PromptContextKind::MemoryPrompt,
                     text: "context text".to_string(),
                     metadata: serde_json::Value::Null,
                 },
@@ -476,11 +478,7 @@ mod tests {
         );
         assert!(request.user_prompt.contains("Question date:\n2024-01-03"));
         assert!(request.user_prompt.contains("Is abstention:\ntrue"));
-        assert!(
-            request
-                .user_prompt
-                .contains("Memory context:\ncontext text")
-        );
+        assert!(request.user_prompt.contains("Memory prompt:\ncontext text"));
         assert!(
             request
                 .user_prompt
@@ -544,7 +542,7 @@ mod tests {
             .judge_retrieval(
                 &question,
                 &PromptContext {
-                    kind: PromptContextKind::HistoryChats,
+                    kind: PromptContextKind::MemoryPrompt,
                     text: "context text".to_string(),
                     metadata: serde_json::Value::Null,
                 },

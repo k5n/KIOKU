@@ -62,7 +62,7 @@ mod tests {
             metadata: serde_json::json!({
                 "requested_profile": serde_json::Value::Null,
                 "resolved_profile": serde_json::Value::Null,
-                "context_kind": "RetrievedMemories",
+                "context_kind": "memory-prompt",
             }),
         };
 

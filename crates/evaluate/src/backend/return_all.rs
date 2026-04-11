@@ -47,7 +47,7 @@ impl MemoryBackend for ReturnAllMemoryBackend {
             selected_events = selected_events.split_off(start);
         }
 
-        let prompt_context = build_prompt_context(&input, &selected_events);
+        let prompt_context = build_prompt_context(&selected_events);
 
         Ok(QueryOutput {
             prompt_context,
@@ -58,26 +58,18 @@ impl MemoryBackend for ReturnAllMemoryBackend {
     }
 }
 
-fn build_prompt_context(input: &QueryInput, events: &[&BenchmarkEvent]) -> PromptContext {
-    match input.scope.dataset {
-        crate::model::BenchmarkDataset::LoCoMo => PromptContext {
-            kind: PromptContextKind::StructuredFacts,
-            text: render_locomo_context(events),
-            metadata: serde_json::json!({
-                "backend_kind": "return_all",
-            }),
-        },
-        crate::model::BenchmarkDataset::LongMemEval => PromptContext {
-            kind: PromptContextKind::HistoryChats,
-            text: render_history_chats(events),
-            metadata: serde_json::json!({
-                "backend_kind": "return_all",
-            }),
-        },
+fn build_prompt_context(events: &[&BenchmarkEvent]) -> PromptContext {
+    PromptContext {
+        kind: PromptContextKind::MemoryPrompt,
+        text: render_memory_prompt(events),
+        metadata: serde_json::json!({
+            "backend_kind": "return_all",
+            "renderer": "event-memory-prompt-v1",
+        }),
     }
 }
 
-fn render_locomo_context(events: &[&BenchmarkEvent]) -> String {
+fn render_memory_prompt(events: &[&BenchmarkEvent]) -> String {
     if events.is_empty() {
         return "(none)".to_string();
     }
@@ -86,57 +78,24 @@ fn render_locomo_context(events: &[&BenchmarkEvent]) -> String {
         .iter()
         .enumerate()
         .map(|(index, event)| {
-            format!(
-                "{}. [memory_id={} source_event_id={}]\n{}",
-                index + 1,
-                event.event_id,
-                event.event_id,
-                event.content.trim()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn render_history_chats(events: &[&BenchmarkEvent]) -> String {
-    let mut sessions: Vec<(String, String, Vec<String>)> = Vec::new();
-    for event in events {
-        let session_date = event
-            .metadata
-            .get("session_date")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(&event.timestamp);
-        let speaker = event
-            .speaker_name
-            .as_deref()
-            .or(event.speaker_id.as_deref())
-            .unwrap_or("unknown");
-        let line = format!("{speaker}: {}", event.content.trim());
-
-        if let Some((stream_id, _, lines)) = sessions.last_mut()
-            && stream_id == &event.stream_id
-        {
-            lines.push(line);
-            continue;
-        }
-
-        sessions.push((
-            event.stream_id.clone(),
-            session_date.to_string(),
-            vec![line],
-        ));
-    }
-
-    sessions
-        .into_iter()
-        .enumerate()
-        .map(|(index, (_, session_date, lines))| {
-            format!(
-                "### Session {}:\nSession Date: {}\nSession Content:\n{}",
-                index + 1,
-                session_date,
-                lines.join("\n\n")
-            )
+            let speaker = event
+                .speaker_name
+                .as_deref()
+                .or(event.speaker_id.as_deref())
+                .unwrap_or("unknown");
+            let mut lines = vec![
+                format!("## Memory {}", index + 1),
+                format!("Memory ID: {}", event.event_id),
+                format!("Stream ID: {}", event.stream_id),
+                format!("Timestamp: {}", event.timestamp),
+                format!("Speaker: {speaker}"),
+            ];
+            if !event.metadata.is_null() {
+                lines.push(format!("Metadata: {}", event.metadata));
+            }
+            lines.push("Content:".to_string());
+            lines.push(event.content.trim().to_string());
+            lines.join("\n")
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -218,14 +177,14 @@ mod tests {
             .unwrap();
 
         let context = output.prompt_context;
-        assert_eq!(context.kind, PromptContextKind::StructuredFacts);
-        assert!(context.text.contains("memory_id=e3"));
-        assert!(context.text.contains("memory_id=e2"));
-        assert!(!context.text.contains("memory_id=e1"));
+        assert_eq!(context.kind, PromptContextKind::MemoryPrompt);
+        assert!(context.text.contains("Memory ID: e3"));
+        assert!(context.text.contains("Memory ID: e2"));
+        assert!(!context.text.contains("Memory ID: e1"));
     }
 
     #[tokio::test]
-    async fn longmemeval_query_returns_history_chat_prompt_context() {
+    async fn query_returns_memory_prompt_context_for_all_datasets() {
         let mut backend = ReturnAllMemoryBackend::default();
         let scope = EvalScope {
             dataset: BenchmarkDataset::LongMemEval,
@@ -249,11 +208,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output.prompt_context.kind, PromptContextKind::HistoryChats);
+        assert_eq!(output.prompt_context.kind, PromptContextKind::MemoryPrompt);
     }
 
     #[tokio::test]
-    async fn history_chat_prompt_context_preserves_ingest_order() {
+    async fn memory_prompt_preserves_ingest_order() {
         let mut backend = ReturnAllMemoryBackend::default();
         let scope = EvalScope {
             dataset: BenchmarkDataset::LongMemEval,
@@ -294,17 +253,9 @@ mod tests {
             .unwrap();
 
         let context = output.prompt_context;
-        assert_eq!(context.kind, PromptContextKind::HistoryChats);
-        assert!(
-            context
-                .text
-                .contains("### Session 1:\nSession Date: 2024-01-01")
-        );
-        assert!(
-            context
-                .text
-                .contains("### Session 2:\nSession Date: 2024-01-02")
-        );
+        assert_eq!(context.kind, PromptContextKind::MemoryPrompt);
+        assert!(context.text.contains("Memory ID: e1"));
+        assert!(context.text.contains("Memory ID: e2"));
         assert!(
             context.text.find("first session").unwrap()
                 < context.text.find("second session").unwrap()
@@ -312,7 +263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn locomo_query_returns_deterministic_prompt_context() {
+    async fn query_returns_deterministic_memory_prompt_context() {
         let mut backend = ReturnAllMemoryBackend::default();
         let scope = EvalScope {
             dataset: BenchmarkDataset::LoCoMo,
@@ -341,8 +292,8 @@ mod tests {
             .unwrap();
 
         let context = output.prompt_context;
-        assert_eq!(context.kind, PromptContextKind::StructuredFacts);
-        assert!(context.text.contains("memory_id=e1"));
-        assert!(context.text.contains("memory_id=e2"));
+        assert_eq!(context.kind, PromptContextKind::MemoryPrompt);
+        assert!(context.text.contains("Memory ID: e1"));
+        assert!(context.text.contains("Memory ID: e2"));
     }
 }

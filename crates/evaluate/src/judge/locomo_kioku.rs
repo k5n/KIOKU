@@ -13,7 +13,8 @@ const ANSWER_JUDGE_KIND: &str = "locomo_kioku_answer_llm";
 
 const RETRIEVAL_SYSTEM_PROMPT: &str = concat!(
     "You are an evaluator of retrieval quality for a conversational memory benchmark.\n",
-    "Judge whether the provided memory context alone is sufficient to answer the question with a gold-equivalent answer.\n",
+    "Judge whether the provided memory prompt alone is sufficient to answer the question with a gold-equivalent answer.\n",
+    "The memory prompt may use any textual format chosen by the memory system.\n",
     "Do not judge writing quality. Do not use external knowledge beyond basic language understanding.\n",
     "Return JSON only."
 );
@@ -82,7 +83,7 @@ where
             .category
             .map_or_else(|| "null".to_string(), |category| category.to_string());
         let user_prompt = format!(
-            "Question:\n{}\n\nGold answers:\n{}\n\nQuestion category:\n{}\n\nRetrieved memory context:\n{}\n\nLabel the context as SUFFICIENT if the context alone contains enough information to derive a correct answer equivalent to one of the gold answers.\nOtherwise label it INSUFFICIENT.\n\nReturn JSON with:\n- label: SUFFICIENT or INSUFFICIENT\n- supported_answer: short answer or null\n- reason: one short sentence",
+            "Question:\n{}\n\nGold answers:\n{}\n\nQuestion category:\n{}\n\nMemory prompt:\n{}\n\nLabel the prompt as SUFFICIENT if it alone contains enough information to derive a correct answer equivalent to one of the gold answers.\nOtherwise label it INSUFFICIENT.\n\nReturn JSON with:\n- label: SUFFICIENT or INSUFFICIENT\n- supported_answer: short answer or null\n- reason: one short sentence",
             question.question,
             serde_json::to_string_pretty(&question.gold_answers)?,
             category,
@@ -258,7 +259,7 @@ mod tests {
             .judge_retrieval(
                 &sample_question(),
                 &PromptContext {
-                    kind: PromptContextKind::StructuredFacts,
+                    kind: PromptContextKind::MemoryPrompt,
                     text: "1. [fact] It happened in May 2019.".to_string(),
                     metadata: serde_json::Value::Null,
                 },

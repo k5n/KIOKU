@@ -226,11 +226,11 @@ mod tests {
         assert_eq!(requests[0].temperature, Some(0.2));
         assert_eq!(requests[0].max_output_tokens, Some(64));
         assert_eq!(requests[0].metadata["protocol"], "longmemeval_kioku_v1");
-        assert!(requests[0].user_prompt.contains("Memory context:"));
+        assert!(requests[0].user_prompt.contains("Memory prompt:"));
         assert_eq!(
             requests[0].system_prompt.as_deref(),
             Some(
-                "You answer questions using only the provided memory context.\nTreat the provided current date as the reference time for the question.\nFor knowledge-update questions, prefer the latest state supported by the memory context.\nDo not use external knowledge.\nIf the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nDo not explain your reasoning.\nReturn only the final answer as a short phrase."
+                "You answer questions using only the provided memory prompt.\nThe memory prompt may use any textual format chosen by the memory system.\nTreat the provided current date as the reference time for the question.\nFor knowledge-update questions, prefer the latest state supported by the memory context.\nDo not use external knowledge.\nIf the memory prompt is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nDo not explain your reasoning.\nReturn only the final answer as a short phrase."
             )
         );
     }
@@ -264,18 +264,18 @@ mod tests {
     fn sample_request() -> AnswerRequest<'static> {
         let prompt = Box::leak(Box::new(PreparedPrompt {
             system_prompt: Some(
-                "You answer questions using only the provided memory context.\nTreat the provided current date as the reference time for the question.\nFor knowledge-update questions, prefer the latest state supported by the memory context.\nDo not use external knowledge.\nIf the memory context is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nDo not explain your reasoning.\nReturn only the final answer as a short phrase."
+                "You answer questions using only the provided memory prompt.\nThe memory prompt may use any textual format chosen by the memory system.\nTreat the provided current date as the reference time for the question.\nFor knowledge-update questions, prefer the latest state supported by the memory context.\nDo not use external knowledge.\nIf the memory prompt is insufficient, answer exactly: NOT_ENOUGH_MEMORY\nDo not explain your reasoning.\nReturn only the final answer as a short phrase."
                     .to_string(),
             ),
             user_prompt: concat!(
-                "Memory context:\n### Session 1:\nSession Date: 2024-01-01\n",
+                "Memory prompt:\n### Session 1:\nSession Date: 2024-01-01\n",
                 "Session Content:\nuser: The user said they moved to Kyoto last month.\n\n",
                 "Current date:\n2024-01-03\n\nQuestion:\nWhere does the user live now?"
             )
             .to_string(),
             template_id: "longmemeval.kioku.answer.v1".to_string(),
             metadata: serde_json::json!({
-                "context_kind": "HistoryChats",
+                "context_kind": "memory-prompt",
                 "protocol": "longmemeval_kioku_v1",
             }),
         }));

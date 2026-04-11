@@ -94,7 +94,9 @@ mod tests {
                     "answerer_model": "answerer-model",
                     "prompt": {
                         "template_id": "locomo.kioku.answer.v1",
-                        "context_kind": "StructuredFacts"
+                        "context_kind": "memory-prompt",
+                        "backend_kind": "return_all",
+                        "renderer": "event-memory-prompt-v1"
                     },
                     "answerer": {
                         "kind": "openai-compatible"
@@ -117,8 +119,10 @@ mod tests {
                 case_id: "case-1".to_string(),
                 question_id: "q1".to_string(),
                 category: Some(2),
-                context_kind: Some("structured-facts".to_string()),
-                context_text: Some("1. [fact] The meeting happened in May 2019.".to_string()),
+                context_kind: Some("memory-prompt".to_string()),
+                context_text: Some(
+                    "## Memory 1\nMemory ID: e1\nStream ID: stream\nTimestamp: 2024-01-01T00:00:00Z\nSpeaker: alice\nContent:\nThe meeting happened in May 2019.".to_string(),
+                ),
                 is_sufficient: Some(true),
                 score: Some(1.0),
                 label: Some("SUFFICIENT".to_string()),
@@ -133,6 +137,7 @@ mod tests {
                 evidence_session_ids: Vec::new(),
                 metadata: serde_json::json!({
                     "backend_kind": "return_all",
+                    "renderer": "event-memory-prompt-v1",
                 }),
             }],
             metrics: MetricsReport {
@@ -243,7 +248,7 @@ kind = "debug"
         let metrics: serde_json::Value =
             serde_json::from_reader(File::open(temp_dir.join("metrics.json")).unwrap()).unwrap();
 
-        assert_eq!(retrieval_record["context_kind"], "structured-facts");
+        assert_eq!(retrieval_record["context_kind"], "memory-prompt");
         assert_eq!(retrieval_record["is_sufficient"], true);
         assert!(retrieval_record.get("retrieved_count").is_none());
         assert!(retrieval_record.get("retrieved_memory_ids").is_none());
@@ -269,7 +274,11 @@ kind = "debug"
         assert!(metrics["metrics"].get("per_type_accuracy").is_none());
         assert_eq!(
             answer_record["answer_metadata"]["prompt"]["context_kind"],
-            "StructuredFacts"
+            "memory-prompt"
+        );
+        assert_eq!(
+            answer_record["answer_metadata"]["prompt"]["renderer"],
+            "event-memory-prompt-v1"
         );
         assert_eq!(
             answer_record["answer_metadata"]["answerer"]["kind"],
@@ -317,7 +326,9 @@ kind = "debug"
                     "answerer_model": "answerer-model",
                     "prompt": {
                         "template_id": "longmemeval.kioku.answer.v1",
-                        "context_kind": "HistoryChats",
+                        "context_kind": "memory-prompt",
+                        "backend_kind": "return_all",
+                        "renderer": "event-memory-prompt-v1",
                         "protocol": "longmemeval_kioku_v1"
                     },
                     "answerer": {
@@ -341,9 +352,9 @@ kind = "debug"
                 case_id: "case-1".to_string(),
                 question_id: "q1".to_string(),
                 category: None,
-                context_kind: Some("history-chats".to_string()),
+                context_kind: Some("memory-prompt".to_string()),
                 context_text: Some(
-                    "### Session 1:\nSession Content:\nuser: I moved to Kyoto.".to_string(),
+                    "## Memory 1\nMemory ID: e1\nStream ID: s1\nTimestamp: 2024-01-01T00:00:00Z\nSpeaker: user\nContent:\nI moved to Kyoto.".to_string(),
                 ),
                 is_sufficient: Some(true),
                 score: Some(1.0),
@@ -359,6 +370,7 @@ kind = "debug"
                 evidence_session_ids: vec!["s1".to_string()],
                 metadata: serde_json::json!({
                     "backend_kind": "return_all",
+                    "renderer": "event-memory-prompt-v1",
                 }),
             }],
             metrics: MetricsReport {
@@ -499,7 +511,7 @@ kind = "debug"
             answer_record["judgement_metadata"]["judge_kind"],
             "longmemeval_kioku_answer_llm"
         );
-        assert_eq!(retrieval_record["context_kind"], "history-chats");
+        assert_eq!(retrieval_record["context_kind"], "memory-prompt");
         assert_eq!(retrieval_record["is_sufficient"], true);
         assert!(retrieval_record.get("retrieved_count").is_none());
         assert!(retrieval_record.get("retrieved_memory_ids").is_none());

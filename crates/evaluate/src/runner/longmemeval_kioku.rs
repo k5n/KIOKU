@@ -10,7 +10,9 @@ use crate::prompt::{PromptBuildRequest, PromptBuilder};
 use crate::token_counter::TokenCounter;
 use anyhow::{Context, ensure};
 
-use super::helpers::{context_kind_name, extract_answerer_model, sanitize_answer_metadata};
+use super::helpers::{
+    context_kind_name, extract_answerer_model, merge_metadata, sanitize_answer_metadata,
+};
 use super::metrics::{LongMemEvalKiokuMetricInput, build_longmemeval_kioku_metrics};
 use super::result::EvaluatePipelineResult;
 
@@ -130,7 +132,7 @@ where
                     judge_metadata: retrieval_judgement.metadata.clone(),
                     evidence_event_ids: question.evidence_event_ids.clone(),
                     evidence_session_ids: question.evidence_session_ids.clone(),
-                    metadata: query_output.metadata,
+                    metadata: merge_metadata(&query_output.metadata, &prompt_context.metadata),
                 });
 
                 answers.push(AnswerLogRecord {
