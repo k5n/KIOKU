@@ -5,7 +5,7 @@ use crate::model::{
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
-pub(super) struct LoCoMoKiokuMetricInput {
+pub(crate) struct LoCoMoKiokuMetricInput {
     pub category: u8,
     pub answer: BinaryJudgement,
     pub retrieval: BinaryJudgement,
@@ -13,7 +13,7 @@ pub(super) struct LoCoMoKiokuMetricInput {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct LongMemEvalKiokuMetricInput {
+pub(crate) struct LongMemEvalKiokuMetricInput {
     pub question_type: String,
     pub is_abstention: bool,
     pub answer: BinaryJudgement,

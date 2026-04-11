@@ -2,19 +2,14 @@ use crate::answerer::Answerer;
 use crate::backend::MemoryBackend;
 use crate::config::PromptConfig;
 use crate::judge::{AnswerJudge, RetrievalJudge};
-use crate::model::{
-    AnswerLogRecord, BenchmarkCase, BenchmarkDataset, EvalScope, QueryInput, RetrievalBudget,
-    RetrievalLogRecord,
-};
-use crate::prompt::{PromptBuildRequest, PromptBuilder};
+use crate::model::{BenchmarkCase, RetrievalBudget};
+use crate::prompt::PromptBuilder;
 use crate::token_counter::TokenCounter;
-use anyhow::{Context, ensure};
+use anyhow::Context;
 
-use super::helpers::{
-    context_kind_name, extract_answerer_model, merge_metadata, sanitize_answer_metadata,
-};
-use super::metrics::{LongMemEvalKiokuMetricInput, build_longmemeval_kioku_metrics};
+use super::policy::ContextTokenPolicy;
 use super::result::EvaluatePipelineResult;
+use super::{CommonEvaluatePipeline, LongMemEvalKiokuEvaluationProtocol};
 
 pub struct LongMemEvalKiokuEvaluatePipeline<
     'a,
@@ -23,165 +18,46 @@ pub struct LongMemEvalKiokuEvaluatePipeline<
     A: ?Sized,
     AJ: ?Sized,
     RJ: ?Sized,
-    TC: ?Sized,
 > {
     pub backend: &'a mut B,
     pub prompt_builder: &'a P,
     pub answerer: &'a A,
     pub answer_judge: &'a AJ,
     pub retrieval_judge: &'a RJ,
-    pub token_counter: &'a TC,
+    pub token_counter: &'a dyn TokenCounter,
     pub budget: RetrievalBudget,
     pub prompt_config: PromptConfig,
 }
 
-impl<'a, B, P, A, AJ, RJ, TC> LongMemEvalKiokuEvaluatePipeline<'a, B, P, A, AJ, RJ, TC>
+impl<'a, B, P, A, AJ, RJ> LongMemEvalKiokuEvaluatePipeline<'a, B, P, A, AJ, RJ>
 where
     B: MemoryBackend + ?Sized,
     P: PromptBuilder + ?Sized,
     A: Answerer + ?Sized,
     AJ: AnswerJudge + ?Sized,
     RJ: RetrievalJudge + ?Sized,
-    TC: TokenCounter + ?Sized,
 {
+    pub const fn context_token_policy() -> ContextTokenPolicy {
+        ContextTokenPolicy::Required
+    }
+
     pub async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
-        let dataset = cases
-            .first()
-            .map(|case| case.dataset)
-            .context("evaluate pipeline requires at least one case")?;
-        ensure!(
-            dataset == BenchmarkDataset::LongMemEval,
-            "LongMemEvalKiokuEvaluatePipeline only supports LongMemEval cases"
+        let protocol = LongMemEvalKiokuEvaluationProtocol::new(
+            self.prompt_config.longmemeval_kioku.as_ref().context(
+                "LongMemEval longmemeval_kioku pipeline requires prompt.longmemeval_kioku configuration",
+            )?,
         );
-        ensure!(
-            cases.iter().all(|case| case.dataset == dataset),
-            "evaluate pipeline requires all cases to use the same dataset"
-        );
-
-        let prompt = self.prompt_config.longmemeval_kioku.as_ref().context(
-            "LongMemEval longmemeval_kioku pipeline requires prompt.longmemeval_kioku configuration",
-        )?;
-
-        let mut answers = Vec::new();
-        let mut retrievals = Vec::new();
-        let mut metric_inputs = Vec::new();
-
-        for case in cases {
-            self.backend
-                .reset(EvalScope {
-                    dataset,
-                    case_id: case.case_id.clone(),
-                })
-                .await?;
-
-            for event in &case.events {
-                self.backend.ingest(event.clone()).await?;
-            }
-
-            for question in &case.questions {
-                let query_output = self
-                    .backend
-                    .query(QueryInput {
-                        scope: EvalScope {
-                            dataset,
-                            case_id: case.case_id.clone(),
-                        },
-                        question_id: question.question_id.clone(),
-                        query: question.question.clone(),
-                        timestamp: question.question_timestamp.clone(),
-                        budget: self.budget,
-                        metadata: serde_json::Value::Null,
-                    })
-                    .await?;
-                let prompt_context = &query_output.prompt_context;
-                let retrieval_judgement = self
-                    .retrieval_judge
-                    .judge_retrieval(question, prompt_context)
-                    .await?;
-                let prepared_prompt =
-                    self.prompt_builder
-                        .build_answer_prompt(PromptBuildRequest {
-                            dataset,
-                            case,
-                            question,
-                            prompt_context,
-                            locomo_kioku_prompt: None,
-                            longmemeval_kioku_prompt: Some(prompt),
-                        })?;
-                let generated = self
-                    .answerer
-                    .answer(crate::model::AnswerRequest {
-                        prompt: &prepared_prompt,
-                    })
-                    .await?;
-                let answer_judgement = self.answer_judge.judge_answer(question, &generated).await?;
-                let answerer_model = extract_answerer_model(&generated.metadata);
-                let context_token_count =
-                    self.token_counter.count_text_tokens(&prompt_context.text)?;
-
-                retrievals.push(RetrievalLogRecord {
-                    dataset,
-                    case_id: case.case_id.clone(),
-                    question_id: question.question_id.clone(),
-                    category: question.category,
-                    context_kind: Some(context_kind_name(prompt_context)),
-                    context_text: Some(prompt_context.text.clone()),
-                    is_sufficient: Some(retrieval_judgement.passed),
-                    score: Some(retrieval_judgement.score),
-                    label: Some(retrieval_judgement.label.clone()),
-                    judge_metadata: retrieval_judgement.metadata.clone(),
-                    evidence_event_ids: question.evidence_event_ids.clone(),
-                    evidence_session_ids: question.evidence_session_ids.clone(),
-                    metadata: merge_metadata(&query_output.metadata, &prompt_context.metadata),
-                });
-
-                answers.push(AnswerLogRecord {
-                    dataset,
-                    case_id: case.case_id.clone(),
-                    question_id: question.question_id.clone(),
-                    question: question.question.clone(),
-                    generated_answer: generated.text,
-                    gold_answers: question.gold_answers.clone(),
-                    is_correct: answer_judgement.passed,
-                    score: answer_judgement.score,
-                    label: answer_judgement.label.clone(),
-                    question_type: question.question_type.clone(),
-                    category: question.category,
-                    is_abstention: question.is_abstention,
-                    answer_metadata: sanitize_answer_metadata(
-                        generated.metadata,
-                        &prepared_prompt.template_id,
-                        &answerer_model,
-                    ),
-                    judgement_metadata: answer_judgement.metadata.clone(),
-                });
-
-                metric_inputs.push(LongMemEvalKiokuMetricInput {
-                    question_type: question
-                        .question_type
-                        .clone()
-                        .context("LongMemEval Kioku metrics require question_type")?,
-                    is_abstention: question.is_abstention,
-                    answer: answer_judgement,
-                    retrieval: retrieval_judgement,
-                    context_token_count,
-                    answerer_model,
-                });
-            }
-        }
-
-        let metrics = build_longmemeval_kioku_metrics(
-            &metric_inputs,
-            &prompt.answer_judge_prompt_id,
-            &prompt.retrieval_judge_prompt_id,
-            self.token_counter.name(),
-        );
-
-        Ok(EvaluatePipelineResult {
-            answers,
-            retrievals,
-            metrics,
-        })
+        let mut pipeline = CommonEvaluatePipeline {
+            backend: self.backend,
+            prompt_builder: self.prompt_builder,
+            answerer: self.answerer,
+            answer_judge: self.answer_judge,
+            retrieval_judge: self.retrieval_judge,
+            token_counter: Some(self.token_counter),
+            budget: self.budget,
+            protocol: &protocol,
+        };
+        pipeline.run(cases).await
     }
 }
 
@@ -201,6 +77,7 @@ mod tests {
     use crate::token_counter::WhitespaceTokenCounter;
 
     use super::LongMemEvalKiokuEvaluatePipeline;
+    use crate::runner::ContextTokenPolicy;
 
     #[derive(Debug, Default)]
     struct RecordingAnswerJudge;
@@ -398,5 +275,19 @@ mod tests {
         assert_eq!(result.metrics.metrics.abstention_question_count, Some(1));
         assert_eq!(result.metrics.metrics.overall_answer_accuracy, Some(1.0));
         assert_eq!(result.metrics.metrics.abstention_answer_accuracy, Some(1.0));
+    }
+
+    #[test]
+    fn longmemeval_context_token_policy_is_required() {
+        assert_eq!(
+            LongMemEvalKiokuEvaluatePipeline::<
+                crate::backend::ReturnAllMemoryBackend,
+                crate::prompt::DefaultPromptBuilder,
+                crate::answerer::DebugAnswerer,
+                RecordingAnswerJudge,
+                RecordingRetrievalJudge,
+            >::context_token_policy(),
+            ContextTokenPolicy::Required
+        );
     }
 }

@@ -159,16 +159,19 @@ where
     AJ: crate::judge::AnswerJudge,
     RJ: crate::judge::RetrievalJudge,
 {
-    let mut pipeline = LoCoMoKiokuEvaluatePipeline {
-        backend,
-        prompt_builder,
-        answerer,
-        answer_judge,
-        retrieval_judge,
-        budget,
-        prompt_config,
-    };
-    pipeline.run(cases).await
+    run_pipeline(
+        cases,
+        LoCoMoKiokuEvaluatePipeline {
+            backend,
+            prompt_builder,
+            answerer,
+            answer_judge,
+            retrieval_judge,
+            budget,
+            prompt_config,
+        },
+    )
+    .await
 }
 
 async fn run_longmemeval_kioku<AJ, RJ>(
@@ -186,17 +189,63 @@ where
     AJ: crate::judge::AnswerJudge,
     RJ: crate::judge::RetrievalJudge,
 {
-    let mut pipeline = LongMemEvalKiokuEvaluatePipeline {
-        backend,
-        prompt_builder,
-        answerer,
-        answer_judge,
-        retrieval_judge,
-        token_counter,
-        budget,
-        prompt_config,
-    };
+    run_pipeline(
+        cases,
+        LongMemEvalKiokuEvaluatePipeline {
+            backend,
+            prompt_builder,
+            answerer,
+            answer_judge,
+            retrieval_judge,
+            token_counter,
+            budget,
+            prompt_config,
+        },
+    )
+    .await
+}
+
+async fn run_pipeline<Pipeline>(
+    cases: &[BenchmarkCase],
+    mut pipeline: Pipeline,
+) -> anyhow::Result<EvaluatePipelineResult>
+where
+    Pipeline: EvaluateRunner,
+{
     pipeline.run(cases).await
+}
+
+#[async_trait::async_trait(?Send)]
+trait EvaluateRunner {
+    async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult>;
+}
+
+#[async_trait::async_trait(?Send)]
+impl<B, P, A, AJ, RJ> EvaluateRunner for LoCoMoKiokuEvaluatePipeline<'_, B, P, A, AJ, RJ>
+where
+    B: MemoryBackend + ?Sized,
+    P: PromptBuilder + ?Sized,
+    A: Answerer + ?Sized,
+    AJ: crate::judge::AnswerJudge + ?Sized,
+    RJ: crate::judge::RetrievalJudge + ?Sized,
+{
+    async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
+        LoCoMoKiokuEvaluatePipeline::run(self, cases).await
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl<B, P, A, AJ, RJ> EvaluateRunner for LongMemEvalKiokuEvaluatePipeline<'_, B, P, A, AJ, RJ>
+where
+    B: MemoryBackend + ?Sized,
+    P: PromptBuilder + ?Sized,
+    A: Answerer + ?Sized,
+    AJ: crate::judge::AnswerJudge + ?Sized,
+    RJ: crate::judge::RetrievalJudge + ?Sized,
+{
+    async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
+        LongMemEvalKiokuEvaluatePipeline::run(self, cases).await
+    }
 }
 
 fn build_locomo_kioku_judges(

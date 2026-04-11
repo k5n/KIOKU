@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 
 use super::PromptContext;
 use super::profiles::locomo;
-use crate::model::{BenchmarkCase, BenchmarkDataset, BenchmarkQuestion};
+use crate::model::{BenchmarkCase, BenchmarkQuestion};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocomoKiokuPromptConfig {
@@ -49,13 +49,17 @@ impl PreparedPrompt {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum AnswerPromptProfile<'a> {
+    LoCoMoKioku(&'a LocomoKiokuPromptConfig),
+    LongMemEvalKioku(&'a LongMemEvalKiokuPromptConfig),
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct PromptBuildRequest<'a> {
-    pub dataset: BenchmarkDataset,
     pub case: &'a BenchmarkCase,
     pub question: &'a BenchmarkQuestion,
     pub prompt_context: &'a PromptContext,
-    pub locomo_kioku_prompt: Option<&'a LocomoKiokuPromptConfig>,
-    pub longmemeval_kioku_prompt: Option<&'a LongMemEvalKiokuPromptConfig>,
+    pub profile: AnswerPromptProfile<'a>,
 }
 
 pub trait PromptBuilder: Send + Sync {
@@ -73,9 +77,11 @@ impl PromptBuilder for DefaultPromptBuilder {
         &self,
         request: PromptBuildRequest<'_>,
     ) -> anyhow::Result<PreparedPrompt> {
-        match request.dataset {
-            BenchmarkDataset::LoCoMo => build_locomo_prompt(request),
-            BenchmarkDataset::LongMemEval => build_longmemeval_prompt(request),
+        match request.profile {
+            AnswerPromptProfile::LoCoMoKioku(config) => build_locomo_prompt(request, config),
+            AnswerPromptProfile::LongMemEvalKioku(config) => {
+                build_longmemeval_kioku_prompt(request, config)
+            }
         }
     }
 }
@@ -91,10 +97,10 @@ const LONGMEMEVAL_KIOKU_ANSWER_SYSTEM_PROMPT: &str = concat!(
     "Return only the final answer as a short phrase."
 );
 
-fn build_locomo_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<PreparedPrompt> {
-    let config = request
-        .locomo_kioku_prompt
-        .context("LoCoMo prompt config is required to build locomo_kioku answer prompts")?;
+fn build_locomo_prompt(
+    request: PromptBuildRequest<'_>,
+    config: &LocomoKiokuPromptConfig,
+) -> anyhow::Result<PreparedPrompt> {
     let resolved_context = request.prompt_context;
 
     let user_prompt = format!(
@@ -108,13 +114,6 @@ fn build_locomo_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<Prepar
         template_id: config.answer_template_id.clone(),
         metadata: prompt_metadata(resolved_context, json!({})),
     })
-}
-
-fn build_longmemeval_prompt(request: PromptBuildRequest<'_>) -> anyhow::Result<PreparedPrompt> {
-    let config = request.longmemeval_kioku_prompt.context(
-        "LongMemEval prompt config is required to build longmemeval_kioku answer prompts",
-    )?;
-    build_longmemeval_kioku_prompt(request, config)
 }
 
 fn build_longmemeval_kioku_prompt(
@@ -170,8 +169,8 @@ fn longmemeval_question_date(question: &BenchmarkQuestion) -> anyhow::Result<&st
 #[cfg(test)]
 mod tests {
     use super::{
-        DefaultPromptBuilder, LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig,
-        PromptBuildRequest, PromptBuilder,
+        AnswerPromptProfile, DefaultPromptBuilder, LocomoKiokuPromptConfig,
+        LongMemEvalKiokuPromptConfig, PromptBuildRequest, PromptBuilder,
     };
     use crate::model::{BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GoldAnswerVariant};
     use crate::prompt::{PromptContext, PromptContextKind};
@@ -189,12 +188,10 @@ mod tests {
 
         let prompt = builder
             .build_answer_prompt(PromptBuildRequest {
-                dataset: BenchmarkDataset::LoCoMo,
                 case: &case,
                 question: &question,
                 prompt_context: &context,
-                locomo_kioku_prompt: Some(&sample_locomo_prompt_config()),
-                longmemeval_kioku_prompt: None,
+                profile: AnswerPromptProfile::LoCoMoKioku(&sample_locomo_prompt_config()),
             })
             .unwrap();
 
@@ -222,12 +219,12 @@ mod tests {
 
         let prompt = builder
             .build_answer_prompt(PromptBuildRequest {
-                dataset: BenchmarkDataset::LongMemEval,
                 case: &case,
                 question: &question,
                 prompt_context: &context,
-                locomo_kioku_prompt: None,
-                longmemeval_kioku_prompt: Some(&sample_longmemeval_kioku_prompt_config()),
+                profile: AnswerPromptProfile::LongMemEvalKioku(
+                    &sample_longmemeval_kioku_prompt_config(),
+                ),
             })
             .unwrap();
 
@@ -239,32 +236,6 @@ mod tests {
         assert!(prompt.user_prompt.contains("Memory prompt:"));
         assert!(prompt.user_prompt.contains("Current date:\n2024-01-03"));
         assert_eq!(prompt.metadata["context_kind"], "memory-prompt");
-    }
-
-    #[test]
-    fn longmemeval_rejects_missing_kioku_prompt_config() {
-        let builder = DefaultPromptBuilder;
-        let case = sample_case(BenchmarkDataset::LongMemEval);
-        let question = sample_question(BenchmarkDataset::LongMemEval, None);
-        let context = PromptContext {
-            kind: PromptContextKind::MemoryPrompt,
-            text: "context".to_string(),
-            metadata: serde_json::Value::Null,
-        };
-
-        let error = builder
-            .build_answer_prompt(PromptBuildRequest {
-                dataset: BenchmarkDataset::LongMemEval,
-                case: &case,
-                question: &question,
-                prompt_context: &context,
-                locomo_kioku_prompt: None,
-                longmemeval_kioku_prompt: None,
-            })
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("LongMemEval prompt config is required"));
     }
 
     fn sample_case(dataset: BenchmarkDataset) -> BenchmarkCase {

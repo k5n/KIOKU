@@ -2,18 +2,13 @@ use crate::answerer::Answerer;
 use crate::backend::MemoryBackend;
 use crate::config::PromptConfig;
 use crate::judge::{AnswerJudge, RetrievalJudge};
-use crate::model::{
-    AnswerLogRecord, BenchmarkCase, BenchmarkDataset, EvalScope, QueryInput, RetrievalBudget,
-    RetrievalLogRecord,
-};
-use crate::prompt::{PromptBuildRequest, PromptBuilder};
-use anyhow::{Context, ensure};
+use crate::model::{BenchmarkCase, RetrievalBudget};
+use crate::prompt::PromptBuilder;
+use anyhow::Context;
 
-use super::helpers::{
-    context_kind_name, extract_answerer_model, merge_metadata, sanitize_answer_metadata,
-};
-use super::metrics::{LoCoMoKiokuMetricInput, build_locomo_kioku_metrics};
+use super::policy::ContextTokenPolicy;
 use super::result::EvaluatePipelineResult;
+use super::{CommonEvaluatePipeline, LoCoMoKiokuEvaluationProtocol};
 
 pub struct LoCoMoKiokuEvaluatePipeline<'a, B: ?Sized, P: ?Sized, A: ?Sized, AJ: ?Sized, RJ: ?Sized>
 {
@@ -34,139 +29,26 @@ where
     AJ: AnswerJudge + ?Sized,
     RJ: RetrievalJudge + ?Sized,
 {
+    pub const fn context_token_policy() -> ContextTokenPolicy {
+        ContextTokenPolicy::Optional
+    }
+
     pub async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
-        let dataset = cases
-            .first()
-            .map(|case| case.dataset)
-            .context("evaluate pipeline requires at least one case")?;
-        ensure!(
-            dataset == BenchmarkDataset::LoCoMo,
-            "LoCoMoKiokuEvaluatePipeline only supports LoCoMo cases"
-        );
-        ensure!(
-            cases.iter().all(|case| case.dataset == dataset),
-            "evaluate pipeline requires all cases to use the same dataset"
-        );
-
-        let locomo_prompt =
-            self.prompt_config.locomo_kioku.as_ref().context(
+        let protocol =
+            LoCoMoKiokuEvaluationProtocol::new(self.prompt_config.locomo_kioku.as_ref().context(
                 "LoCoMo locomo_kioku pipeline requires prompt.locomo_kioku configuration",
-            )?;
-
-        let mut answers = Vec::new();
-        let mut retrievals = Vec::new();
-        let mut metric_inputs = Vec::new();
-
-        for case in cases {
-            self.backend
-                .reset(EvalScope {
-                    dataset,
-                    case_id: case.case_id.clone(),
-                })
-                .await?;
-
-            for event in &case.events {
-                self.backend.ingest(event.clone()).await?;
-            }
-
-            for question in case
-                .questions
-                .iter()
-                .filter(|question| matches!(question.category, Some(1..=4)))
-            {
-                let query_output = self
-                    .backend
-                    .query(QueryInput {
-                        scope: EvalScope {
-                            dataset,
-                            case_id: case.case_id.clone(),
-                        },
-                        question_id: question.question_id.clone(),
-                        query: question.question.clone(),
-                        timestamp: question.question_timestamp.clone(),
-                        budget: self.budget,
-                        metadata: serde_json::Value::Null,
-                    })
-                    .await?;
-                let prompt_context = &query_output.prompt_context;
-                let retrieval_judgement = self
-                    .retrieval_judge
-                    .judge_retrieval(question, prompt_context)
-                    .await?;
-                let prepared_prompt =
-                    self.prompt_builder
-                        .build_answer_prompt(PromptBuildRequest {
-                            dataset,
-                            case,
-                            question,
-                            prompt_context,
-                            locomo_kioku_prompt: Some(locomo_prompt),
-                            longmemeval_kioku_prompt: None,
-                        })?;
-                let generated = self
-                    .answerer
-                    .answer(crate::model::AnswerRequest {
-                        prompt: &prepared_prompt,
-                    })
-                    .await?;
-                let answer_judgement = self.answer_judge.judge_answer(question, &generated).await?;
-
-                let answerer_model = extract_answerer_model(&generated.metadata);
-                retrievals.push(RetrievalLogRecord {
-                    dataset,
-                    case_id: case.case_id.clone(),
-                    question_id: question.question_id.clone(),
-                    category: question.category,
-                    context_kind: Some(context_kind_name(prompt_context)),
-                    context_text: Some(prompt_context.text.clone()),
-                    is_sufficient: Some(retrieval_judgement.passed),
-                    score: Some(retrieval_judgement.score),
-                    label: Some(retrieval_judgement.label.clone()),
-                    judge_metadata: retrieval_judgement.metadata.clone(),
-                    evidence_event_ids: question.evidence_event_ids.clone(),
-                    evidence_session_ids: question.evidence_session_ids.clone(),
-                    metadata: merge_metadata(&query_output.metadata, &prompt_context.metadata),
-                });
-                answers.push(AnswerLogRecord {
-                    dataset,
-                    case_id: case.case_id.clone(),
-                    question_id: question.question_id.clone(),
-                    question: question.question.clone(),
-                    generated_answer: generated.text,
-                    gold_answers: question.gold_answers.clone(),
-                    is_correct: answer_judgement.passed,
-                    score: answer_judgement.score,
-                    label: answer_judgement.label.clone(),
-                    question_type: question.question_type.clone(),
-                    category: question.category,
-                    is_abstention: question.is_abstention,
-                    answer_metadata: sanitize_answer_metadata(
-                        generated.metadata,
-                        &prepared_prompt.template_id,
-                        &answerer_model,
-                    ),
-                    judgement_metadata: answer_judgement.metadata.clone(),
-                });
-                metric_inputs.push(LoCoMoKiokuMetricInput {
-                    category: question.category.expect("category 1-4 already filtered"),
-                    answer: answer_judgement,
-                    retrieval: retrieval_judgement,
-                    answerer_model,
-                });
-            }
-        }
-
-        let metrics = build_locomo_kioku_metrics(
-            &metric_inputs,
-            &locomo_prompt.answer_judge_prompt_id,
-            &locomo_prompt.retrieval_judge_prompt_id,
-        );
-
-        Ok(EvaluatePipelineResult {
-            answers,
-            retrievals,
-            metrics,
-        })
+            )?);
+        let mut pipeline = CommonEvaluatePipeline {
+            backend: self.backend,
+            prompt_builder: self.prompt_builder,
+            answerer: self.answerer,
+            answer_judge: self.answer_judge,
+            retrieval_judge: self.retrieval_judge,
+            token_counter: None,
+            budget: self.budget,
+            protocol: &protocol,
+        };
+        pipeline.run(cases).await
     }
 }
 
@@ -185,6 +67,7 @@ mod tests {
     use crate::prompt::{DefaultPromptBuilder, LocomoKiokuPromptConfig, PromptContext};
 
     use super::LoCoMoKiokuEvaluatePipeline;
+    use crate::runner::ContextTokenPolicy;
 
     #[derive(Debug, Default)]
     struct RecordingAnswerJudge;
@@ -382,5 +265,19 @@ mod tests {
         let retrieval_context = seen_contexts.lock().unwrap()[0].clone();
         let answer_prompt = answerer.contexts.lock().unwrap()[0].clone();
         assert!(answer_prompt.contains(&retrieval_context));
+    }
+
+    #[test]
+    fn locomo_context_token_policy_is_optional() {
+        assert_eq!(
+            LoCoMoKiokuEvaluatePipeline::<
+                crate::backend::ReturnAllMemoryBackend,
+                crate::prompt::DefaultPromptBuilder,
+                crate::answerer::DebugAnswerer,
+                RecordingAnswerJudge,
+                RecordingRetrievalJudge,
+            >::context_token_policy(),
+            ContextTokenPolicy::Optional
+        );
     }
 }
