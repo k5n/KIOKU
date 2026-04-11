@@ -22,25 +22,7 @@ pub struct QueryInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryOutput {
-    pub retrieved: Vec<RetrievedMemory>,
-    #[serde(default)]
-    pub prompt_context: Option<PromptContext>,
-    #[serde(default)]
-    pub metadata: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RetrievedMemory {
-    pub memory_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_event_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub score: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
-    pub content: String,
+    pub prompt_context: PromptContext,
     #[serde(default)]
     pub metadata: Value,
 }

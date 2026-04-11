@@ -31,11 +31,6 @@ pub struct RetrievalLogRecord {
     pub question_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<u8>,
-    pub retrieved_count: usize,
-    #[serde(default)]
-    pub retrieved_memory_ids: Vec<String>,
-    #[serde(default)]
-    pub retrieved_source_event_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,7 +109,6 @@ pub struct DatasetMetrics {
     pub abstention_accuracy: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abstention_answer_accuracy: Option<f32>,
-    pub average_retrieved_item_count: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub average_context_token_count: Option<f32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

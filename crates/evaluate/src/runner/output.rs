@@ -117,9 +117,6 @@ mod tests {
                 case_id: "case-1".to_string(),
                 question_id: "q1".to_string(),
                 category: Some(2),
-                retrieved_count: 2,
-                retrieved_memory_ids: vec!["m1".to_string(), "m2".to_string()],
-                retrieved_source_event_ids: vec!["e1".to_string()],
                 context_kind: Some("structured-facts".to_string()),
                 context_text: Some("1. [fact] The meeting happened in May 2019.".to_string()),
                 is_sufficient: Some(true),
@@ -168,7 +165,6 @@ mod tests {
                     adversarial_accuracy: None,
                     abstention_accuracy: None,
                     abstention_answer_accuracy: None,
-                    average_retrieved_item_count: 2.0,
                     average_context_token_count: None,
                     per_category_accuracy: Default::default(),
                     per_category_answer_accuracy: std::iter::once((
@@ -249,15 +245,24 @@ kind = "debug"
 
         assert_eq!(retrieval_record["context_kind"], "structured-facts");
         assert_eq!(retrieval_record["is_sufficient"], true);
+        assert!(retrieval_record.get("retrieved_count").is_none());
+        assert!(retrieval_record.get("retrieved_memory_ids").is_none());
+        assert!(retrieval_record.get("retrieved_source_event_ids").is_none());
         assert_eq!(
             retrieval_record["judge_metadata"]["judge_kind"],
             "locomo_kioku_retrieval_llm"
         );
         assert_eq!(metrics["protocol"], "locomo_kioku_v1");
+        assert!(metrics.get("provenance").is_none());
         assert_eq!(metrics["metrics"]["overall_answer_accuracy"], 1.0);
         assert_eq!(
             metrics["metrics"]["overall_retrieval_sufficiency_accuracy"],
             1.0
+        );
+        assert!(
+            metrics["metrics"]
+                .get("average_retrieved_item_count")
+                .is_none()
         );
         assert!(metrics["metrics"].get("overall_accuracy").is_none());
         assert!(metrics["metrics"].get("per_category_accuracy").is_none());
@@ -336,9 +341,6 @@ kind = "debug"
                 case_id: "case-1".to_string(),
                 question_id: "q1".to_string(),
                 category: None,
-                retrieved_count: 2,
-                retrieved_memory_ids: vec!["m1".to_string(), "m2".to_string()],
-                retrieved_source_event_ids: vec!["e1".to_string()],
                 context_kind: Some("history-chats".to_string()),
                 context_text: Some(
                     "### Session 1:\nSession Content:\nuser: I moved to Kyoto.".to_string(),
@@ -391,7 +393,6 @@ kind = "debug"
                     adversarial_accuracy: None,
                     abstention_accuracy: None,
                     abstention_answer_accuracy: None,
-                    average_retrieved_item_count: 2.0,
                     average_context_token_count: Some(7.0),
                     per_category_accuracy: Default::default(),
                     per_category_answer_accuracy: Default::default(),
@@ -500,15 +501,24 @@ kind = "debug"
         );
         assert_eq!(retrieval_record["context_kind"], "history-chats");
         assert_eq!(retrieval_record["is_sufficient"], true);
+        assert!(retrieval_record.get("retrieved_count").is_none());
+        assert!(retrieval_record.get("retrieved_memory_ids").is_none());
+        assert!(retrieval_record.get("retrieved_source_event_ids").is_none());
         assert_eq!(
             retrieval_record["judge_metadata"]["judge_prompt_id"],
             "longmemeval.kioku.judge.retrieval.v1"
         );
         assert_eq!(metrics["protocol"], "longmemeval_kioku_v1");
+        assert!(metrics.get("provenance").is_none());
         assert_eq!(metrics["metrics"]["overall_answer_accuracy"], 1.0);
         assert_eq!(
             metrics["metrics"]["overall_retrieval_sufficiency_accuracy"],
             1.0
+        );
+        assert!(
+            metrics["metrics"]
+                .get("average_retrieved_item_count")
+                .is_none()
         );
         assert_eq!(metrics["metrics"]["non_abstention_question_count"], 1);
         assert_eq!(metrics["metrics"]["abstention_question_count"], 0);

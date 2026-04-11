@@ -12,4 +12,4 @@ pub use metrics::{
     AnswerLogRecord, CategoryMetrics, DatasetMetrics, MetricProvenance, MetricsReport,
     RetrievalLogRecord,
 };
-pub use retrieval::{QueryInput, QueryOutput, RetrievalBudget, RetrievedMemory};
+pub use retrieval::{QueryInput, QueryOutput, RetrievalBudget};

@@ -9,7 +9,6 @@ pub(super) struct LoCoMoKiokuMetricInput {
     pub category: u8,
     pub answer: BinaryJudgement,
     pub retrieval: BinaryJudgement,
-    pub retrieved_count: usize,
     pub answerer_model: String,
 }
 
@@ -19,7 +18,6 @@ pub(super) struct LongMemEvalKiokuMetricInput {
     pub is_abstention: bool,
     pub answer: BinaryJudgement,
     pub retrieval: BinaryJudgement,
-    pub retrieved_count: usize,
     pub context_token_count: usize,
     pub answerer_model: String,
 }
@@ -34,8 +32,6 @@ pub(super) fn build_locomo_kioku_metrics(
 
     let mut answer_correct = 0usize;
     let mut retrieval_correct = 0usize;
-    let mut retrieved_total = 0usize;
-
     for input in inputs {
         let key = input.category.to_string();
 
@@ -56,18 +52,11 @@ pub(super) fn build_locomo_kioku_metrics(
             retrieval_entry.correct += 1;
             retrieval_correct += 1;
         }
-
-        retrieved_total += input.retrieved_count;
     }
 
     finalize_category_metrics(&mut per_category_answer_accuracy);
     finalize_category_metrics(&mut per_category_retrieval_sufficiency_accuracy);
 
-    let average_retrieved_item_count = if inputs.is_empty() {
-        0.0
-    } else {
-        retrieved_total as f32 / inputs.len() as f32
-    };
     let answer_metadata = inputs.first().map(|input| &input.answer.metadata);
     let retrieval_metadata = inputs.first().map(|input| &input.retrieval.metadata);
 
@@ -107,7 +96,6 @@ pub(super) fn build_locomo_kioku_metrics(
             adversarial_accuracy: None,
             abstention_accuracy: None,
             abstention_answer_accuracy: None,
-            average_retrieved_item_count,
             average_context_token_count: None,
             per_category_accuracy: BTreeMap::new(),
             per_category_answer_accuracy,
@@ -134,12 +122,10 @@ pub(super) fn build_longmemeval_kioku_metrics(
     let mut non_abstention_answer_correct = 0usize;
     let mut non_abstention_retrieval_correct = 0usize;
     let mut abstention_answer_correct = 0usize;
-    let mut retrieved_total = 0usize;
     let mut context_token_total = 0usize;
 
     for input in inputs {
         question_count += 1;
-        retrieved_total += input.retrieved_count;
         context_token_total += input.context_token_count;
 
         if input.is_abstention {
@@ -228,11 +214,6 @@ pub(super) fn build_longmemeval_kioku_metrics(
             abstention_accuracy: None,
             abstention_answer_accuracy: (abstention_question_count > 0)
                 .then(|| ratio(abstention_answer_correct, abstention_question_count)),
-            average_retrieved_item_count: if question_count == 0 {
-                0.0
-            } else {
-                retrieved_total as f32 / question_count as f32
-            },
             average_context_token_count: (question_count > 0)
                 .then(|| context_token_total as f32 / question_count as f32),
             per_category_accuracy: BTreeMap::new(),
@@ -311,14 +292,12 @@ mod tests {
                             "judge_model": "judge-model",
                         }),
                     },
-                    retrieved_count: 4,
                     answerer_model: "answerer-model".to_string(),
                 },
                 LoCoMoKiokuMetricInput {
                     category: 1,
                     answer: judgement(false, "WRONG"),
                     retrieval: judgement(true, "SUFFICIENT"),
-                    retrieved_count: 2,
                     answerer_model: "answerer-model".to_string(),
                 },
             ],
@@ -332,7 +311,6 @@ mod tests {
             metrics.metrics.overall_retrieval_sufficiency_accuracy,
             Some(0.5)
         );
-        assert_eq!(metrics.metrics.average_retrieved_item_count, 3.0);
         assert_eq!(
             metrics.metrics.per_category_answer_accuracy["1"].accuracy,
             0.5
@@ -353,7 +331,6 @@ mod tests {
                     is_abstention: false,
                     answer: judgement(true, "CORRECT"),
                     retrieval: judgement(false, "INSUFFICIENT"),
-                    retrieved_count: 3,
                     context_token_count: 30,
                     answerer_model: "answerer-model".to_string(),
                 },
@@ -362,7 +339,6 @@ mod tests {
                     is_abstention: false,
                     answer: judgement(false, "WRONG"),
                     retrieval: judgement(true, "SUFFICIENT"),
-                    retrieved_count: 1,
                     context_token_count: 10,
                     answerer_model: "answerer-model".to_string(),
                 },
@@ -371,7 +347,6 @@ mod tests {
                     is_abstention: true,
                     answer: judgement(true, "CORRECT"),
                     retrieval: judgement(true, "SUFFICIENT"),
-                    retrieved_count: 2,
                     context_token_count: 20,
                     answerer_model: "answerer-model".to_string(),
                 },

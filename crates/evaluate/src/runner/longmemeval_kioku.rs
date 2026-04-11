@@ -10,9 +10,7 @@ use crate::prompt::{PromptBuildRequest, PromptBuilder};
 use crate::token_counter::TokenCounter;
 use anyhow::{Context, ensure};
 
-use super::helpers::{
-    context_kind_name, extract_answerer_model, sanitize_answer_metadata, stable_unique_strings,
-};
+use super::helpers::{context_kind_name, extract_answerer_model, sanitize_answer_metadata};
 use super::metrics::{LongMemEvalKiokuMetricInput, build_longmemeval_kioku_metrics};
 use super::result::EvaluatePipelineResult;
 
@@ -93,9 +91,7 @@ where
                         metadata: serde_json::Value::Null,
                     })
                     .await?;
-                let prompt_context = query_output.prompt_context.as_ref().context(
-                    "longmemeval_kioku_v1 requires backend-provided prompt_context for every LongMemEval question",
-                )?;
+                let prompt_context = &query_output.prompt_context;
                 let retrieval_judgement = self
                     .retrieval_judge
                     .judge_retrieval(question, prompt_context)
@@ -106,8 +102,7 @@ where
                             dataset,
                             case,
                             question,
-                            retrieved: &query_output.retrieved,
-                            prompt_context: Some(prompt_context),
+                            prompt_context,
                             locomo_kioku_prompt: None,
                             longmemeval_kioku_prompt: Some(prompt),
                         })?;
@@ -127,18 +122,6 @@ where
                     case_id: case.case_id.clone(),
                     question_id: question.question_id.clone(),
                     category: question.category,
-                    retrieved_count: query_output.retrieved.len(),
-                    retrieved_memory_ids: query_output
-                        .retrieved
-                        .iter()
-                        .map(|memory| memory.memory_id.clone())
-                        .collect(),
-                    retrieved_source_event_ids: stable_unique_strings(
-                        query_output
-                            .retrieved
-                            .iter()
-                            .filter_map(|memory| memory.source_event_id.clone()),
-                    ),
                     context_kind: Some(context_kind_name(prompt_context)),
                     context_text: Some(prompt_context.text.clone()),
                     is_sufficient: Some(retrieval_judgement.passed),
@@ -179,7 +162,6 @@ where
                     is_abstention: question.is_abstention,
                     answer: answer_judgement,
                     retrieval: retrieval_judgement,
-                    retrieved_count: query_output.retrieved.len(),
                     context_token_count,
                     answerer_model,
                 });
@@ -207,12 +189,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::answerer::{Answerer, DebugAnswerer};
-    use crate::backend::{MemoryBackend, ReturnAllMemoryBackend};
+    use crate::backend::ReturnAllMemoryBackend;
     use crate::judge::{AnswerJudge, BinaryJudgement, RetrievalJudge};
     use crate::model::{
         AnswerRequest, BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion,
-        GeneratedAnswer, GoldAnswerVariant, QueryInput, QueryOutput, RetrievalBudget,
-        RetrievedMemory,
+        GeneratedAnswer, GoldAnswerVariant, RetrievalBudget,
     };
     use crate::prompt::{DefaultPromptBuilder, LongMemEvalKiokuPromptConfig, PromptContext};
     use crate::token_counter::WhitespaceTokenCounter;
@@ -282,38 +263,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Default)]
-    struct MissingPromptContextBackend;
-
-    #[async_trait]
-    impl MemoryBackend for MissingPromptContextBackend {
-        async fn reset(&mut self, _scope: crate::model::EvalScope) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn ingest(&mut self, _event: BenchmarkEvent) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn query(&mut self, _input: QueryInput) -> anyhow::Result<QueryOutput> {
-            Ok(QueryOutput {
-                retrieved: vec![RetrievedMemory {
-                    memory_id: "m1".to_string(),
-                    source_event_id: Some("e1".to_string()),
-                    source_session_id: Some("s1".to_string()),
-                    score: None,
-                    timestamp: None,
-                    content: "fact".to_string(),
-                    metadata: serde_json::Value::Null,
-                }],
-                prompt_context: None,
-                metadata: serde_json::json!({
-                    "backend": "missing-context",
-                }),
-            })
-        }
-    }
-
     fn sample_case(is_abstention: bool) -> BenchmarkCase {
         BenchmarkCase {
             dataset: BenchmarkDataset::LongMemEval,
@@ -347,41 +296,6 @@ mod tests {
             }],
             metadata: serde_json::Value::Null,
         }
-    }
-
-    #[tokio::test]
-    async fn longmemeval_pipeline_fails_fast_when_prompt_context_is_missing() {
-        let mut backend = MissingPromptContextBackend;
-        let prompt_builder = DefaultPromptBuilder;
-        let answerer = DebugAnswerer::default();
-        let answer_judge = RecordingAnswerJudge;
-        let retrieval_judge = RecordingRetrievalJudge::default();
-        let token_counter = WhitespaceTokenCounter;
-
-        let mut pipeline = LongMemEvalKiokuEvaluatePipeline {
-            backend: &mut backend,
-            prompt_builder: &prompt_builder,
-            answerer: &answerer,
-            answer_judge: &answer_judge,
-            retrieval_judge: &retrieval_judge,
-            token_counter: &token_counter,
-            budget: RetrievalBudget::default(),
-            prompt_config: crate::config::PromptConfig {
-                longmemeval_kioku: Some(LongMemEvalKiokuPromptConfig {
-                    answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
-                    answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
-                    retrieval_judge_prompt_id: "longmemeval.kioku.judge.retrieval.v1".to_string(),
-                }),
-                locomo_kioku: None,
-            },
-        };
-
-        let error = pipeline
-            .run(&[sample_case(false)])
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("requires backend-provided prompt_context"));
     }
 
     #[derive(Debug, Default)]

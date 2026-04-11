@@ -2,7 +2,7 @@ use anyhow::ensure;
 use async_trait::async_trait;
 
 use crate::backend::MemoryBackend;
-use crate::model::{BenchmarkEvent, EvalScope, QueryInput, QueryOutput, RetrievedMemory};
+use crate::model::{BenchmarkEvent, EvalScope, QueryInput, QueryOutput};
 use crate::prompt::{PromptContext, PromptContextKind};
 
 #[derive(Debug, Default)]
@@ -47,26 +47,9 @@ impl MemoryBackend for ReturnAllMemoryBackend {
             selected_events = selected_events.split_off(start);
         }
 
-        let retrieved: Vec<RetrievedMemory> = selected_events
-            .into_iter()
-            .map(|event| RetrievedMemory {
-                memory_id: event.event_id.clone(),
-                source_event_id: Some(event.event_id.clone()),
-                source_session_id: Some(event.stream_id.clone()),
-                score: None,
-                timestamp: Some(event.timestamp.clone()),
-                content: event.content.clone(),
-                metadata: serde_json::json!({
-                    "speaker_id": event.speaker_id,
-                    "speaker_name": event.speaker_name,
-                    "event_metadata": event.metadata,
-                }),
-            })
-            .collect();
-        let prompt_context = build_prompt_context(&input, &retrieved, &self.events);
+        let prompt_context = build_prompt_context(&input, &selected_events);
 
         Ok(QueryOutput {
-            retrieved,
             prompt_context,
             metadata: serde_json::json!({
                 "backend_kind": "return_all",
@@ -75,60 +58,49 @@ impl MemoryBackend for ReturnAllMemoryBackend {
     }
 }
 
-fn build_prompt_context(
-    input: &QueryInput,
-    retrieved: &[RetrievedMemory],
-    events: &[BenchmarkEvent],
-) -> Option<PromptContext> {
+fn build_prompt_context(input: &QueryInput, events: &[&BenchmarkEvent]) -> PromptContext {
     match input.scope.dataset {
-        crate::model::BenchmarkDataset::LoCoMo => Some(PromptContext {
+        crate::model::BenchmarkDataset::LoCoMo => PromptContext {
             kind: PromptContextKind::StructuredFacts,
-            text: render_locomo_context(retrieved),
+            text: render_locomo_context(events),
             metadata: serde_json::json!({
                 "backend_kind": "return_all",
             }),
-        }),
-        crate::model::BenchmarkDataset::LongMemEval => Some(PromptContext {
+        },
+        crate::model::BenchmarkDataset::LongMemEval => PromptContext {
             kind: PromptContextKind::HistoryChats,
-            text: render_history_chats(events, input.budget.max_items),
+            text: render_history_chats(events),
             metadata: serde_json::json!({
                 "backend_kind": "return_all",
             }),
-        }),
+        },
     }
 }
 
-fn render_locomo_context(retrieved: &[RetrievedMemory]) -> String {
-    if retrieved.is_empty() {
+fn render_locomo_context(events: &[&BenchmarkEvent]) -> String {
+    if events.is_empty() {
         return "(none)".to_string();
     }
 
-    retrieved
+    events
         .iter()
         .enumerate()
-        .map(|(index, memory)| {
+        .map(|(index, event)| {
             format!(
                 "{}. [memory_id={} source_event_id={}]\n{}",
                 index + 1,
-                memory.memory_id,
-                memory.source_event_id.as_deref().unwrap_or("unknown-event"),
-                memory.content.trim()
+                event.event_id,
+                event.event_id,
+                event.content.trim()
             )
         })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
 
-fn render_history_chats(events: &[BenchmarkEvent], max_items: Option<usize>) -> String {
-    let selected_events = if let Some(max_items) = max_items {
-        let start = events.len().saturating_sub(max_items);
-        &events[start..]
-    } else {
-        events
-    };
-
+fn render_history_chats(events: &[&BenchmarkEvent]) -> String {
     let mut sessions: Vec<(String, String, Vec<String>)> = Vec::new();
-    for event in selected_events {
+    for event in events {
         let session_date = event
             .metadata
             .get("session_date")
@@ -210,7 +182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_returns_last_n_items_in_ingest_order() {
+    async fn query_returns_last_n_items_in_prompt_context_order() {
         let mut backend = ReturnAllMemoryBackend::default();
         let scope = EvalScope {
             dataset: BenchmarkDataset::LoCoMo,
@@ -245,16 +217,15 @@ mod tests {
             .await
             .unwrap();
 
-        let event_ids: Vec<_> = output
-            .retrieved
-            .into_iter()
-            .map(|item| item.memory_id)
-            .collect();
-        assert_eq!(event_ids, vec!["e3".to_string(), "e2".to_string()]);
+        let context = output.prompt_context;
+        assert_eq!(context.kind, PromptContextKind::StructuredFacts);
+        assert!(context.text.contains("memory_id=e3"));
+        assert!(context.text.contains("memory_id=e2"));
+        assert!(!context.text.contains("memory_id=e1"));
     }
 
     #[tokio::test]
-    async fn longmemeval_query_returns_history_chat_context_and_retrieved_items() {
+    async fn longmemeval_query_returns_history_chat_prompt_context() {
         let mut backend = ReturnAllMemoryBackend::default();
         let scope = EvalScope {
             dataset: BenchmarkDataset::LongMemEval,
@@ -278,11 +249,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output.retrieved.len(), 1);
-        assert_eq!(
-            output.prompt_context.as_ref().map(|context| &context.kind),
-            Some(&PromptContextKind::HistoryChats)
-        );
+        assert_eq!(output.prompt_context.kind, PromptContextKind::HistoryChats);
     }
 
     #[tokio::test]
@@ -326,7 +293,7 @@ mod tests {
             .await
             .unwrap();
 
-        let context = output.prompt_context.expect("prompt context");
+        let context = output.prompt_context;
         assert_eq!(context.kind, PromptContextKind::HistoryChats);
         assert!(
             context
@@ -373,7 +340,7 @@ mod tests {
             .await
             .unwrap();
 
-        let context = output.prompt_context.expect("prompt context");
+        let context = output.prompt_context;
         assert_eq!(context.kind, PromptContextKind::StructuredFacts);
         assert!(context.text.contains("memory_id=e1"));
         assert!(context.text.contains("memory_id=e2"));

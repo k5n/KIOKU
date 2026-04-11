@@ -194,18 +194,8 @@ pub struct QueryScope {
     pub metadata: serde_json::Value,
 }
 
-pub struct RetrievedMemory {
-    pub memory_id: String,
-    pub source_event_id: Option<String>,
-    pub source_session_id: Option<String>,
-    pub score: Option<f32>,
-    pub timestamp: Option<Timestamp>,
-    pub content: String,
-    pub metadata: serde_json::Value,
-}
-
 pub struct QueryOutput {
-    pub memories: Vec<RetrievedMemory>,
+    pub prompt_context: PromptContext,
     pub metadata: serde_json::Value,
 }
 ```
@@ -214,7 +204,8 @@ pub struct QueryOutput {
 `QueryInput.budget` は answerer に渡す retrieval budget を表すためのものであり、backend 固有の検索パラメータを直接露出させません。
 Phase 1 の `ReturnAllMemoryBackend` では `max_items` のみを実装し、`max_tokens` は将来の backend 向け予約フィールドとします。Phase 1.5 で導入する TOML 設定ファイルでは `max_tokens` を設定項目として保持できますが、Phase 1 系 backend では未対応のため明示的にエラーを返します。
 
-retrieval 指標のために、`source_event_id` と `source_session_id` は必ず持たせます。
+Phase 5.6 以降、この共通 contract に raw retrieval item 配列は含めません。  
+raw retrieval diagnostics が必要な場合は backend-specific metadata に閉じ込めます。
 
 ## 5. benchmark adapter 層
 
@@ -331,7 +322,8 @@ canonical ID は次で固定します。
 ここで重要なのは、LongMemEval の `question_type` は **判定用 rubric の分岐キー** であり、回答用 prompt の第一分岐ではないことです。  
 回答用 prompt は、retriever がどのような文脈を返したかという **context profile** で切り替える方が benchmark 仕様に合います。
 
-また、将来の memory backend が prompt-ready な context を返せるように、PromptBuilder は `RetrievedMemory` の配列だけでなく、必要なら backend が返す `PromptContext` を受け取れる設計にします。
+また、将来の memory backend が prompt-ready な context を返せるように、PromptBuilder は
+backend が返す `PromptContext` をそのまま受け取れる設計にします。
 
 ### 7.2 Answerer
 
@@ -465,12 +457,9 @@ runner は dataset に依らず次の順で動かします。
 
 - `case_id`
 - `question_id`
-- `retrieved_memory_ids`
-- `retrieved_event_ids`
-- `retrieved_session_ids`
-- `retrieval_budget`
-- `latency_ms`
-- `retrieval_metrics`
+- `context_kind`
+- `context_text`
+- `judge_metadata`
 - `judge_kind`
 - `metric_semantics_version`
 - `provisional`

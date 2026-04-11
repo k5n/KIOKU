@@ -48,16 +48,6 @@ pub(super) fn sanitize_answer_metadata(
     metadata
 }
 
-pub(super) fn stable_unique_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut output = Vec::new();
-    for value in values {
-        if !output.contains(&value) {
-            output.push(value);
-        }
-    }
-    output
-}
-
 pub(super) fn context_kind_name(context: &PromptContext) -> String {
     serde_json::to_value(&context.kind)
         .ok()
