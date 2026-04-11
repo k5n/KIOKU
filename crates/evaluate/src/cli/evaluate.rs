@@ -16,10 +16,9 @@ use crate::judge::{
     LongMemEvalKiokuRetrievalJudge, OpenAiCompatibleJudgeRuntime,
 };
 use crate::model::{BenchmarkCase, BenchmarkDataset};
-use crate::prompt::{DefaultPromptBuilder, PromptBuilder};
+use crate::prompt::DefaultPromptBuilder;
 use crate::runner::{
-    EvaluatePipelineResult, LoCoMoKiokuEvaluatePipeline, LongMemEvalKiokuEvaluatePipeline,
-    write_outputs,
+    LoCoMoKiokuEvaluationProtocol, LongMemEvalKiokuEvaluationProtocol, run_pipeline, write_outputs,
 };
 use crate::token_counter::WhitespaceTokenCounter;
 
@@ -43,48 +42,55 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
 
     let result = match run.dataset {
         BenchmarkDataset::LoCoMo => {
+            let prompt = run
+                .prompt
+                .locomo_kioku
+                .as_ref()
+                .context("LoCoMo runs require prompt.locomo_kioku")?;
             let (answer_judge, retrieval_judge) = build_locomo_kioku_judges(
                 run.judge
                     .as_ref()
                     .context("LoCoMo runs require a judge configuration")?,
-                run.prompt
-                    .locomo_kioku
-                    .as_ref()
-                    .context("LoCoMo runs require prompt.locomo_kioku")?,
+                prompt,
             )?;
-            run_locomo_kioku(
+            let protocol = LoCoMoKiokuEvaluationProtocol::new(prompt);
+            run_pipeline(
                 &cases,
                 &mut *backend,
                 &prompt_builder,
                 &*answerer,
                 &answer_judge,
                 &retrieval_judge,
+                None,
                 run.retrieval,
-                run.prompt.clone(),
+                &protocol,
             )
             .await?
         }
         BenchmarkDataset::LongMemEval => {
+            let prompt = run
+                .prompt
+                .longmemeval_kioku
+                .as_ref()
+                .context("LongMemEval runs require prompt.longmemeval_kioku")?;
             let (answer_judge, retrieval_judge) = build_longmemeval_kioku_judges(
                 run.judge
                     .as_ref()
                     .context("LongMemEval runs require a judge configuration")?,
-                run.prompt
-                    .longmemeval_kioku
-                    .as_ref()
-                    .context("LongMemEval runs require prompt.longmemeval_kioku")?,
+                prompt,
             )?;
             let token_counter = WhitespaceTokenCounter;
-            run_longmemeval_kioku(
+            let protocol = LongMemEvalKiokuEvaluationProtocol::new(prompt);
+            run_pipeline(
                 &cases,
                 &mut *backend,
                 &prompt_builder,
                 &*answerer,
                 &answer_judge,
                 &retrieval_judge,
-                &token_counter,
+                Some(&token_counter),
                 run.retrieval,
-                run.prompt.clone(),
+                &protocol,
             )
             .await?
         }
@@ -142,109 +148,6 @@ fn build_answerer(config: &AnswererConfig) -> anyhow::Result<Box<dyn Answerer>> 
                 llm,
             )))
         }
-    }
-}
-
-async fn run_locomo_kioku<AJ, RJ>(
-    cases: &[BenchmarkCase],
-    backend: &mut dyn MemoryBackend,
-    prompt_builder: &dyn PromptBuilder,
-    answerer: &dyn Answerer,
-    answer_judge: &AJ,
-    retrieval_judge: &RJ,
-    budget: crate::model::RetrievalBudget,
-    prompt_config: crate::config::PromptConfig,
-) -> anyhow::Result<EvaluatePipelineResult>
-where
-    AJ: crate::judge::AnswerJudge,
-    RJ: crate::judge::RetrievalJudge,
-{
-    run_pipeline(
-        cases,
-        LoCoMoKiokuEvaluatePipeline {
-            backend,
-            prompt_builder,
-            answerer,
-            answer_judge,
-            retrieval_judge,
-            budget,
-            prompt_config,
-        },
-    )
-    .await
-}
-
-async fn run_longmemeval_kioku<AJ, RJ>(
-    cases: &[BenchmarkCase],
-    backend: &mut dyn MemoryBackend,
-    prompt_builder: &dyn PromptBuilder,
-    answerer: &dyn Answerer,
-    answer_judge: &AJ,
-    retrieval_judge: &RJ,
-    token_counter: &WhitespaceTokenCounter,
-    budget: crate::model::RetrievalBudget,
-    prompt_config: crate::config::PromptConfig,
-) -> anyhow::Result<EvaluatePipelineResult>
-where
-    AJ: crate::judge::AnswerJudge,
-    RJ: crate::judge::RetrievalJudge,
-{
-    run_pipeline(
-        cases,
-        LongMemEvalKiokuEvaluatePipeline {
-            backend,
-            prompt_builder,
-            answerer,
-            answer_judge,
-            retrieval_judge,
-            token_counter,
-            budget,
-            prompt_config,
-        },
-    )
-    .await
-}
-
-async fn run_pipeline<Pipeline>(
-    cases: &[BenchmarkCase],
-    mut pipeline: Pipeline,
-) -> anyhow::Result<EvaluatePipelineResult>
-where
-    Pipeline: EvaluateRunner,
-{
-    pipeline.run(cases).await
-}
-
-#[async_trait::async_trait(?Send)]
-trait EvaluateRunner {
-    async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult>;
-}
-
-#[async_trait::async_trait(?Send)]
-impl<B, P, A, AJ, RJ> EvaluateRunner for LoCoMoKiokuEvaluatePipeline<'_, B, P, A, AJ, RJ>
-where
-    B: MemoryBackend + ?Sized,
-    P: PromptBuilder + ?Sized,
-    A: Answerer + ?Sized,
-    AJ: crate::judge::AnswerJudge + ?Sized,
-    RJ: crate::judge::RetrievalJudge + ?Sized,
-{
-    async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
-        LoCoMoKiokuEvaluatePipeline::run(self, cases).await
-    }
-}
-
-#[async_trait::async_trait(?Send)]
-impl<B, P, A, AJ, RJ> EvaluateRunner for LongMemEvalKiokuEvaluatePipeline<'_, B, P, A, AJ, RJ>
-where
-    B: MemoryBackend + ?Sized,
-    P: PromptBuilder + ?Sized,
-    A: Answerer + ?Sized,
-    AJ: crate::judge::AnswerJudge + ?Sized,
-    RJ: crate::judge::RetrievalJudge + ?Sized,
-{
-    async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
-        LongMemEvalKiokuEvaluatePipeline::run(self, cases).await
     }
 }
 

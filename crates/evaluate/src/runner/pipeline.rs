@@ -17,26 +17,17 @@ use super::{
     ContextTokenPolicy, DatasetEvaluationProtocol, EvaluatePipelineResult, EvaluatedQuestion,
 };
 
-pub(crate) struct CommonEvaluatePipeline<
-    'a,
-    B: ?Sized,
-    P: ?Sized,
-    A: ?Sized,
-    AJ: ?Sized,
-    RJ: ?Sized,
-    Protocol,
-> {
-    pub backend: &'a mut B,
-    pub prompt_builder: &'a P,
-    pub answerer: &'a A,
-    pub answer_judge: &'a AJ,
-    pub retrieval_judge: &'a RJ,
-    pub token_counter: Option<&'a dyn TokenCounter>,
-    pub budget: RetrievalBudget,
-    pub protocol: &'a Protocol,
-}
-
-impl<'a, B, P, A, AJ, RJ, Protocol> CommonEvaluatePipeline<'a, B, P, A, AJ, RJ, Protocol>
+pub(crate) async fn run_pipeline<B, P, A, AJ, RJ, Protocol>(
+    cases: &[BenchmarkCase],
+    backend: &mut B,
+    prompt_builder: &P,
+    answerer: &A,
+    answer_judge: &AJ,
+    retrieval_judge: &RJ,
+    token_counter: Option<&dyn TokenCounter>,
+    budget: RetrievalBudget,
+    protocol: &Protocol,
+) -> anyhow::Result<EvaluatePipelineResult>
 where
     B: MemoryBackend + ?Sized,
     P: PromptBuilder + ?Sized,
@@ -45,123 +36,113 @@ where
     RJ: RetrievalJudge + ?Sized,
     Protocol: DatasetEvaluationProtocol,
 {
-    pub async fn run(&mut self, cases: &[BenchmarkCase]) -> anyhow::Result<EvaluatePipelineResult> {
-        let dataset = cases
-            .first()
-            .map(|case| case.dataset)
-            .context("evaluate pipeline requires at least one case")?;
-        ensure!(
-            cases.iter().all(|case| case.dataset == dataset),
-            "evaluate pipeline requires all cases to use the same dataset"
-        );
-        ensure!(
-            dataset == self.protocol.dataset(),
-            "evaluate pipeline dataset mismatch: cases use `{}` but protocol expects `{}`",
-            dataset.as_str(),
-            self.protocol.dataset().as_str(),
-        );
+    let dataset = cases
+        .first()
+        .map(|case| case.dataset)
+        .context("evaluate pipeline requires at least one case")?;
+    ensure!(
+        cases.iter().all(|case| case.dataset == dataset),
+        "evaluate pipeline requires all cases to use the same dataset"
+    );
+    ensure!(
+        dataset == protocol.dataset(),
+        "evaluate pipeline dataset mismatch: cases use `{}` but protocol expects `{}`",
+        dataset.as_str(),
+        protocol.dataset().as_str(),
+    );
 
-        let required_token_counter = match self.protocol.context_token_policy() {
-            ContextTokenPolicy::Required => Some(self.token_counter.context(
-                "evaluate pipeline requires token_counter when protocol context_token_policy is Required",
-            )?),
-            ContextTokenPolicy::Optional => None,
-        };
-        let context_tokenizer = required_token_counter.map(TokenCounter::name);
+    let required_token_counter = match protocol.context_token_policy() {
+        ContextTokenPolicy::Required => Some(token_counter.context(
+            "evaluate pipeline requires token_counter when protocol context_token_policy is Required",
+        )?),
+        ContextTokenPolicy::Optional => None,
+    };
+    let context_tokenizer = required_token_counter.map(TokenCounter::name);
 
-        let mut answers = Vec::new();
-        let mut retrievals = Vec::new();
-        let mut metric_inputs = Vec::new();
+    let mut answers = Vec::new();
+    let mut retrievals = Vec::new();
+    let mut metric_inputs = Vec::new();
 
-        for case in cases {
-            self.backend
-                .reset(EvalScope {
-                    dataset,
-                    case_id: case.case_id.clone(),
-                })
-                .await?;
+    for case in cases {
+        backend
+            .reset(EvalScope {
+                dataset,
+                case_id: case.case_id.clone(),
+            })
+            .await?;
 
-            for event in &case.events {
-                self.backend.ingest(event.clone()).await?;
-            }
-
-            for question in case
-                .questions
-                .iter()
-                .filter(|question| self.protocol.include_question(question))
-            {
-                let query_output = self
-                    .backend
-                    .query(QueryInput {
-                        scope: EvalScope {
-                            dataset,
-                            case_id: case.case_id.clone(),
-                        },
-                        question_id: question.question_id.clone(),
-                        query: question.question.clone(),
-                        timestamp: question.question_timestamp.clone(),
-                        budget: self.budget,
-                        metadata: serde_json::Value::Null,
-                    })
-                    .await?;
-                let prompt_context = &query_output.prompt_context;
-                let retrieval_judgement = self
-                    .retrieval_judge
-                    .judge_retrieval(question, prompt_context)
-                    .await?;
-                let prepared_prompt =
-                    self.prompt_builder
-                        .build_answer_prompt(PromptBuildRequest {
-                            case,
-                            question,
-                            prompt_context,
-                            profile: self.protocol.answer_prompt_profile(),
-                        })?;
-                let generated_answer = self
-                    .answerer
-                    .answer(AnswerRequest {
-                        prompt: &prepared_prompt,
-                    })
-                    .await?;
-                let answer_judgement = self
-                    .answer_judge
-                    .judge_answer(question, &generated_answer)
-                    .await?;
-                let answerer_model = extract_answerer_model(&generated_answer.metadata);
-                let context_token_count = required_token_counter
-                    .map(|token_counter| token_counter.count_text_tokens(&prompt_context.text))
-                    .transpose()?;
-
-                let evaluated = EvaluatedQuestion {
-                    dataset,
-                    case,
-                    question,
-                    prompt_context: query_output.prompt_context,
-                    query_metadata: query_output.metadata,
-                    retrieval_judgement,
-                    prepared_prompt,
-                    generated_answer,
-                    answer_judgement,
-                    answerer_model,
-                    context_token_count,
-                };
-
-                retrievals.push(build_retrieval_log(&evaluated));
-                answers.push(build_answer_log(&evaluated));
-                metric_inputs.push(self.protocol.build_metric_input(&evaluated)?);
-            }
+        for event in &case.events {
+            backend.ingest(event.clone()).await?;
         }
 
-        let metrics = self
-            .protocol
-            .build_metrics(&metric_inputs, context_tokenizer)?;
+        for question in case
+            .questions
+            .iter()
+            .filter(|question| protocol.include_question(question))
+        {
+            let query_output = backend
+                .query(QueryInput {
+                    scope: EvalScope {
+                        dataset,
+                        case_id: case.case_id.clone(),
+                    },
+                    question_id: question.question_id.clone(),
+                    query: question.question.clone(),
+                    timestamp: question.question_timestamp.clone(),
+                    budget,
+                    metadata: serde_json::Value::Null,
+                })
+                .await?;
+            let prompt_context = &query_output.prompt_context;
+            let retrieval_judgement = retrieval_judge
+                .judge_retrieval(question, prompt_context)
+                .await?;
+            let prepared_prompt = prompt_builder.build_answer_prompt(PromptBuildRequest {
+                case,
+                question,
+                prompt_context,
+                profile: protocol.answer_prompt_profile(),
+            })?;
+            let generated_answer = answerer
+                .answer(AnswerRequest {
+                    prompt: &prepared_prompt,
+                })
+                .await?;
+            let answer_judgement = answer_judge
+                .judge_answer(question, &generated_answer)
+                .await?;
+            let answerer_model = extract_answerer_model(&generated_answer.metadata);
+            let context_token_count = required_token_counter
+                .map(|token_counter| token_counter.count_text_tokens(&prompt_context.text))
+                .transpose()?;
 
-        Ok(EvaluatePipelineResult {
-            answers,
-            retrievals,
-            metrics,
-        })
+            let evaluated = EvaluatedQuestion {
+                dataset,
+                case,
+                question,
+                prompt_context: query_output.prompt_context,
+                query_metadata: query_output.metadata,
+                retrieval_judgement,
+                prepared_prompt,
+                generated_answer,
+                answer_judgement,
+                answerer_model,
+                context_token_count,
+            };
+
+            retrievals.push(build_retrieval_log(&evaluated));
+            answers.push(build_answer_log(&evaluated));
+            metric_inputs.push(protocol.build_metric_input(&evaluated)?);
+        }
     }
+
+    let metrics = protocol.build_metrics(&metric_inputs, context_tokenizer)?;
+
+    Ok(EvaluatePipelineResult {
+        answers,
+        retrievals,
+        metrics,
+    })
 }
 
 fn build_retrieval_log(evaluated: &EvaluatedQuestion<'_>) -> RetrievalLogRecord {
@@ -210,7 +191,7 @@ fn build_answer_log(evaluated: &EvaluatedQuestion<'_>) -> AnswerLogRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::CommonEvaluatePipeline;
+    use super::run_pipeline;
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
@@ -453,21 +434,19 @@ mod tests {
             included_categories: vec![1],
             seen_context_token_counts: Arc::new(Mutex::new(Vec::new())),
         };
-        let mut pipeline = CommonEvaluatePipeline {
-            backend: &mut backend,
-            prompt_builder: &prompt_builder,
-            answerer: &answerer,
-            answer_judge: &answer_judge,
-            retrieval_judge: &retrieval_judge,
-            token_counter: None,
-            budget: RetrievalBudget::default(),
-            protocol: &protocol,
-        };
-
-        let result = pipeline
-            .run(&[sample_case(BenchmarkDataset::LoCoMo)])
-            .await
-            .unwrap();
+        let result = run_pipeline(
+            &[sample_case(BenchmarkDataset::LoCoMo)],
+            &mut backend,
+            &prompt_builder,
+            &answerer,
+            &answer_judge,
+            &retrieval_judge,
+            None,
+            RetrievalBudget::default(),
+            &protocol,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.answers.len(), 1);
         assert_eq!(result.retrievals.len(), 1);
@@ -490,21 +469,19 @@ mod tests {
             included_categories: vec![1],
             seen_context_token_counts: seen_context_token_counts.clone(),
         };
-        let mut pipeline = CommonEvaluatePipeline {
-            backend: &mut backend,
-            prompt_builder: &prompt_builder,
-            answerer: &answerer,
-            answer_judge: &answer_judge,
-            retrieval_judge: &retrieval_judge,
-            token_counter: None,
-            budget: RetrievalBudget::default(),
-            protocol: &protocol,
-        };
-
-        let result = pipeline
-            .run(&[sample_case(BenchmarkDataset::LoCoMo)])
-            .await
-            .unwrap();
+        let result = run_pipeline(
+            &[sample_case(BenchmarkDataset::LoCoMo)],
+            &mut backend,
+            &prompt_builder,
+            &answerer,
+            &answer_judge,
+            &retrieval_judge,
+            None,
+            RetrievalBudget::default(),
+            &protocol,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.metrics.provenance.context_tokenizer, None);
         assert_eq!(
@@ -528,21 +505,19 @@ mod tests {
             included_categories: vec![1],
             seen_context_token_counts: Arc::new(Mutex::new(Vec::new())),
         };
-        let mut pipeline = CommonEvaluatePipeline {
-            backend: &mut backend,
-            prompt_builder: &prompt_builder,
-            answerer: &answerer,
-            answer_judge: &answer_judge,
-            retrieval_judge: &retrieval_judge,
-            token_counter: None,
-            budget: RetrievalBudget::default(),
-            protocol: &protocol,
-        };
-
-        let error = pipeline
-            .run(&[sample_case(BenchmarkDataset::LongMemEval)])
-            .await
-            .unwrap_err();
+        let error = run_pipeline(
+            &[sample_case(BenchmarkDataset::LongMemEval)],
+            &mut backend,
+            &prompt_builder,
+            &answerer,
+            &answer_judge,
+            &retrieval_judge,
+            None,
+            RetrievalBudget::default(),
+            &protocol,
+        )
+        .await
+        .unwrap_err();
 
         assert!(error.to_string().contains("token_counter"));
     }
@@ -563,21 +538,19 @@ mod tests {
             included_categories: vec![1],
             seen_context_token_counts: Arc::new(Mutex::new(Vec::new())),
         };
-        let mut pipeline = CommonEvaluatePipeline {
-            backend: &mut backend,
-            prompt_builder: &prompt_builder,
-            answerer: &answerer,
-            answer_judge: &answer_judge,
-            retrieval_judge: &retrieval_judge,
-            token_counter: Some(&token_counter),
-            budget: RetrievalBudget::default(),
-            protocol: &protocol,
-        };
-
-        let error = pipeline
-            .run(&[sample_case(BenchmarkDataset::LoCoMo)])
-            .await
-            .unwrap_err();
+        let error = run_pipeline(
+            &[sample_case(BenchmarkDataset::LoCoMo)],
+            &mut backend,
+            &prompt_builder,
+            &answerer,
+            &answer_judge,
+            &retrieval_judge,
+            Some(&token_counter),
+            RetrievalBudget::default(),
+            &protocol,
+        )
+        .await
+        .unwrap_err();
 
         assert!(error.to_string().contains("dataset mismatch"));
     }
