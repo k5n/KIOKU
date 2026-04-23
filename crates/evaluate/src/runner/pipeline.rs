@@ -101,7 +101,6 @@ where
                 case,
                 question,
                 prompt_context,
-                profile: protocol.answer_prompt_profile(),
             })?;
             let generated_answer = answerer
                 .answer(AnswerRequest {
@@ -195,19 +194,20 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
-    use crate::answerer::DebugAnswerer;
-    use crate::backend::ReturnAllMemoryBackend;
-    use crate::judge::{AnswerJudge, BinaryJudgement, RetrievalJudge};
-    use crate::model::{
-        BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion, CategoryMetrics,
-        DatasetMetrics, GeneratedAnswer, GoldAnswerVariant, MetricProvenance, MetricsReport,
-        RetrievalBudget,
+    use crate::benchmarks::LocomoKiokuPromptConfig;
+    use crate::common::{
+        answerer::DebugAnswerer,
+        backend::ReturnAllMemoryBackend,
+        judge::{AnswerJudge, BinaryJudgement, RetrievalJudge},
+        model::{
+            BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion, CategoryMetrics,
+            DatasetMetrics, GeneratedAnswer, GoldAnswerVariant, MetricProvenance, MetricsReport,
+            RetrievalBudget,
+        },
+        prompt::{PreparedPrompt, PromptBuilder, PromptContext, PromptContextKind},
+        runner::{ContextTokenPolicy, DatasetEvaluationProtocol, EvaluatedQuestion},
+        token_counter::WhitespaceTokenCounter,
     };
-    use crate::prompt::{
-        AnswerPromptProfile, DefaultPromptBuilder, LocomoKiokuPromptConfig, PromptContext,
-    };
-    use crate::runner::{ContextTokenPolicy, DatasetEvaluationProtocol, EvaluatedQuestion};
-    use crate::token_counter::WhitespaceTokenCounter;
 
     #[derive(Debug, Default)]
     struct RecordingAnswerJudge;
@@ -261,16 +261,39 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct TestProtocol<'a> {
+    #[derive(Debug, Clone)]
+    struct TestPromptBuilder {
+        prompt: LocomoKiokuPromptConfig,
+    }
+
+    impl PromptBuilder for TestPromptBuilder {
+        fn build_answer_prompt(
+            &self,
+            request: crate::common::prompt::PromptBuildRequest<'_>,
+        ) -> anyhow::Result<PreparedPrompt> {
+            Ok(PreparedPrompt {
+                system_prompt: Some("test system".to_string()),
+                user_prompt: format!(
+                    "Memory prompt:\n{}\n\nQuestion:\n{}",
+                    request.prompt_context.text, request.question.question
+                ),
+                template_id: self.prompt.answer_template_id.clone(),
+                metadata: serde_json::json!({
+                    "context_kind": PromptContextKind::MemoryPrompt,
+                }),
+            })
+        }
+    }
+
+    struct TestProtocol {
         dataset: BenchmarkDataset,
         context_token_policy: ContextTokenPolicy,
-        prompt: &'a LocomoKiokuPromptConfig,
+        prompt: LocomoKiokuPromptConfig,
         included_categories: Vec<u8>,
         seen_context_token_counts: Arc<Mutex<Vec<Option<usize>>>>,
     }
 
-    impl DatasetEvaluationProtocol for TestProtocol<'_> {
+    impl DatasetEvaluationProtocol for TestProtocol {
         type MetricInput = String;
 
         fn dataset(&self) -> BenchmarkDataset {
@@ -285,10 +308,6 @@ mod tests {
             question
                 .category
                 .is_some_and(|category| self.included_categories.contains(&category))
-        }
-
-        fn answer_prompt_profile<'a>(&'a self) -> AnswerPromptProfile<'a> {
-            AnswerPromptProfile::LoCoMoKioku(self.prompt)
         }
 
         fn build_metric_input(
@@ -422,15 +441,17 @@ mod tests {
     #[tokio::test]
     async fn common_runner_respects_protocol_question_filter() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt = sample_prompt_config();
+        let prompt_builder = TestPromptBuilder {
+            prompt: prompt.clone(),
+        };
         let answerer = DebugAnswerer::new("correct");
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge;
-        let prompt = sample_prompt_config();
         let protocol = TestProtocol {
             dataset: BenchmarkDataset::LoCoMo,
             context_token_policy: ContextTokenPolicy::Optional,
-            prompt: &prompt,
+            prompt,
             included_categories: vec![1],
             seen_context_token_counts: Arc::new(Mutex::new(Vec::new())),
         };
@@ -456,16 +477,18 @@ mod tests {
     #[tokio::test]
     async fn common_runner_allows_optional_policy_without_token_counter() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt = sample_prompt_config();
+        let prompt_builder = TestPromptBuilder {
+            prompt: prompt.clone(),
+        };
         let answerer = DebugAnswerer::new("correct");
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge;
         let seen_context_token_counts = Arc::new(Mutex::new(Vec::new()));
-        let prompt = sample_prompt_config();
         let protocol = TestProtocol {
             dataset: BenchmarkDataset::LoCoMo,
             context_token_policy: ContextTokenPolicy::Optional,
-            prompt: &prompt,
+            prompt,
             included_categories: vec![1],
             seen_context_token_counts: seen_context_token_counts.clone(),
         };
@@ -493,15 +516,17 @@ mod tests {
     #[tokio::test]
     async fn common_runner_requires_token_counter_for_required_policy() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt = sample_prompt_config();
+        let prompt_builder = TestPromptBuilder {
+            prompt: prompt.clone(),
+        };
         let answerer = DebugAnswerer::new("correct");
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge;
-        let prompt = sample_prompt_config();
         let protocol = TestProtocol {
             dataset: BenchmarkDataset::LongMemEval,
             context_token_policy: ContextTokenPolicy::Required,
-            prompt: &prompt,
+            prompt,
             included_categories: vec![1],
             seen_context_token_counts: Arc::new(Mutex::new(Vec::new())),
         };
@@ -525,16 +550,18 @@ mod tests {
     #[tokio::test]
     async fn common_runner_fails_on_dataset_protocol_mismatch() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt = sample_prompt_config();
+        let prompt_builder = TestPromptBuilder {
+            prompt: prompt.clone(),
+        };
         let answerer = DebugAnswerer::new("correct");
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge;
-        let prompt = sample_prompt_config();
         let token_counter = WhitespaceTokenCounter;
         let protocol = TestProtocol {
             dataset: BenchmarkDataset::LongMemEval,
             context_token_policy: ContextTokenPolicy::Optional,
-            prompt: &prompt,
+            prompt,
             included_categories: vec![1],
             seen_context_token_counts: Arc::new(Mutex::new(Vec::new())),
         };

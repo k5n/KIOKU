@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use crate::model::BenchmarkDataset;
+use crate::benchmarks::{TomlLoCoMoBenchmarkSection, TomlLongMemEvalBenchmarkSection};
 
 use super::{AnswererKind, BackendKind, JudgeKind};
 
@@ -11,7 +11,7 @@ pub(super) struct TomlRunConfig {
     pub(super) run: TomlRunSection,
     pub(super) backend: TomlBackendSection,
     pub(super) retrieval: Option<TomlRetrievalSection>,
-    pub(super) prompt: Option<TomlPromptSection>,
+    pub(super) benchmark: Option<TomlBenchmarkSection>,
     pub(super) answerer: TomlAnswererSection,
     pub(super) judge: Option<TomlJudgeSection>,
 }
@@ -19,9 +19,15 @@ pub(super) struct TomlRunConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlRunSection {
-    pub(super) dataset: BenchmarkDataset,
     pub(super) input: PathBuf,
     pub(super) output_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TomlBenchmarkSection {
+    pub(super) locomo: Option<TomlLoCoMoBenchmarkSection>,
+    pub(super) longmemeval: Option<TomlLongMemEvalBenchmarkSection>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,29 +52,6 @@ pub(super) struct TomlAnswererSection {
     pub(super) kind: AnswererKind,
     pub(super) debug: Option<EmptySection>,
     pub(super) openai_compatible: Option<TomlOpenAiCompatibleSection>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct TomlPromptSection {
-    pub(super) longmemeval_kioku: Option<TomlLongMemEvalKiokuPromptSection>,
-    pub(super) locomo_kioku: Option<TomlLocomoKiokuPromptSection>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct TomlLocomoKiokuPromptSection {
-    pub(super) answer_template_id: String,
-    pub(super) answer_judge_prompt_id: String,
-    pub(super) retrieval_judge_prompt_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct TomlLongMemEvalKiokuPromptSection {
-    pub(super) answer_template_id: String,
-    pub(super) answer_judge_prompt_id: String,
-    pub(super) retrieval_judge_prompt_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

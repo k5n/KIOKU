@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::Path;
 
-use crate::model::{
+use crate::common::model::{
     BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion, GoldAnswerVariant,
 };
 
-pub type LongMemEvalDataset = Vec<LongMemEvalEntry>;
+type LongMemEvalDataset = Vec<LongMemEvalEntry>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LongMemEvalEntry {
@@ -99,7 +99,7 @@ pub enum LongMemEvalRole {
     Other(String),
 }
 
-pub fn load_longmemeval_dataset(path: &Path) -> anyhow::Result<LongMemEvalDataset> {
+fn load_longmemeval_dataset(path: &Path) -> anyhow::Result<LongMemEvalDataset> {
     let json_data = std::fs::read_to_string(path).with_context(|| {
         format!(
             "failed to read LongMemEval dataset file: {}",
@@ -122,7 +122,7 @@ pub fn load_longmemeval_dataset(path: &Path) -> anyhow::Result<LongMemEvalDatase
     Ok(dataset)
 }
 
-pub fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<BenchmarkCase> {
+fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<BenchmarkCase> {
     let mut sessions = entry
         .sessions()?
         .into_iter()
@@ -205,6 +205,19 @@ pub fn adapt_longmemeval_entry(entry: &LongMemEvalEntry) -> anyhow::Result<Bench
             "raw_question_id": entry.question_id,
         }),
     })
+}
+
+pub(crate) fn load_dataset(path: &Path) -> anyhow::Result<Vec<BenchmarkCase>> {
+    load_longmemeval_dataset(path)?
+        .iter()
+        .map(adapt_longmemeval_entry)
+        .collect::<anyhow::Result<Vec<_>>>()
+        .with_context(|| {
+            format!(
+                "failed to adapt LongMemEval cases from `{}`",
+                path.display()
+            )
+        })
 }
 
 fn parse_longmemeval_date(value: &str) -> anyhow::Result<DateTime<Utc>> {

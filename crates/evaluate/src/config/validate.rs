@@ -1,24 +1,20 @@
 use anyhow::{Context, anyhow, ensure};
 use std::path::Path;
 
-use crate::model::{BenchmarkDataset, RetrievalBudget};
+use crate::benchmarks;
+use crate::model::RetrievalBudget;
 
 use super::{
-    AnswererConfig, BackendConfig, BackendKind, JudgeConfig, OpenAiCompatibleAnswererConfig,
-    OpenAiCompatibleJudgeConfig, PromptConfig, ResolvedConfig, ValidatedConfig,
+    AnswererConfig, BackendConfig, BackendKind, BenchmarkConfig, JudgeConfig,
+    OpenAiCompatibleAnswererConfig, OpenAiCompatibleJudgeConfig, ResolvedConfig, ValidatedConfig,
 };
 
 impl ResolvedConfig {
     pub fn validate(self) -> anyhow::Result<ValidatedConfig> {
-        validate_backend(
-            &self.run.backend,
-            &self.run.dataset,
-            &self.run.retrieval,
-            &self,
-        )?;
-        validate_prompt(&self.run.prompt, &self.run.dataset, &self)?;
+        validate_backend(&self.run.backend, &self.run.retrieval, &self)?;
+        validate_benchmark(&self.run.benchmark)?;
         validate_answerer(&self.run.answerer, &self)?;
-        validate_judge(self.run.judge.as_ref(), &self.run.dataset, &self)?;
+        validate_judge(self.run.judge.as_ref(), &self.run.benchmark, &self)?;
         validate_output_dir(&self.run.output_dir)?;
         Ok(ValidatedConfig {
             source_path: self.source_path,
@@ -30,7 +26,6 @@ impl ResolvedConfig {
 
 fn validate_backend(
     backend: &BackendConfig,
-    _dataset: &BenchmarkDataset,
     retrieval: &RetrievalBudget,
     source: &ResolvedConfig,
 ) -> anyhow::Result<()> {
@@ -63,6 +58,15 @@ fn validate_backend(
     Ok(())
 }
 
+fn validate_benchmark(benchmark: &BenchmarkConfig) -> anyhow::Result<()> {
+    match benchmark {
+        BenchmarkConfig::LoCoMo(config) => benchmarks::locomo_api::validate_config(config),
+        BenchmarkConfig::LongMemEval(config) => {
+            benchmarks::longmemeval_api::validate_config(config)
+        }
+    }
+}
+
 fn validate_answerer(answerer: &AnswererConfig, source: &ResolvedConfig) -> anyhow::Result<()> {
     match answerer {
         AnswererConfig::Debug => {
@@ -92,101 +96,25 @@ fn validate_answerer(answerer: &AnswererConfig, source: &ResolvedConfig) -> anyh
 
 fn validate_judge(
     judge: Option<&JudgeConfig>,
-    dataset: &BenchmarkDataset,
+    benchmark: &BenchmarkConfig,
     source: &ResolvedConfig,
 ) -> anyhow::Result<()> {
-    match dataset {
-        BenchmarkDataset::LoCoMo => {
-            let judge = judge.context("LoCoMo runs require a `[judge]` section")?;
-            match judge {
-                JudgeConfig::OpenAiCompatible(openai) => {
-                    let _ = source
-                        .toml
-                        .judge
-                        .as_ref()
-                        .and_then(|judge| judge.openai_compatible.as_ref())
-                        .context("openai-compatible judge config is missing")?;
-                    validate_openai_runtime_config(openai, "judge.openai_compatible")?;
-                }
-            }
+    let judge = match benchmark {
+        BenchmarkConfig::LoCoMo(_) => judge.context("LoCoMo runs require a `[judge]` section")?,
+        BenchmarkConfig::LongMemEval(_) => {
+            judge.context("LongMemEval runs require a `[judge]` section")?
         }
-        BenchmarkDataset::LongMemEval => {
-            let judge = judge.context("LongMemEval runs require a `[judge]` section")?;
-            match judge {
-                JudgeConfig::OpenAiCompatible(openai) => {
-                    let _ = source
-                        .toml
-                        .judge
-                        .as_ref()
-                        .and_then(|judge| judge.openai_compatible.as_ref())
-                        .context("openai-compatible judge config is missing")?;
-                    validate_openai_runtime_config(openai, "judge.openai_compatible")?;
-                }
-            }
-        }
-    }
+    };
 
-    Ok(())
-}
-
-fn validate_prompt(
-    prompt: &PromptConfig,
-    dataset: &BenchmarkDataset,
-    source: &ResolvedConfig,
-) -> anyhow::Result<()> {
-    match dataset {
-        BenchmarkDataset::LoCoMo => {
-            ensure!(
-                source
-                    .toml
-                    .prompt
-                    .as_ref()
-                    .and_then(|prompt| prompt.longmemeval_kioku.as_ref())
-                    .is_none(),
-                "inactive prompt section `[prompt.longmemeval_kioku]` is not allowed when run.dataset = \"locomo\""
-            );
-            let locomo_kioku = prompt.locomo_kioku.as_ref().context(
-                "LoCoMo runs require `[prompt.locomo_kioku]` with answer/judge prompt ids",
-            )?;
-            ensure!(
-                locomo_kioku.answer_template_id == "locomo.kioku.answer.v1",
-                "prompt.locomo_kioku.answer_template_id must be `locomo.kioku.answer.v1`"
-            );
-            ensure!(
-                locomo_kioku.answer_judge_prompt_id == "locomo.kioku.judge.answer.v1",
-                "prompt.locomo_kioku.answer_judge_prompt_id must be `locomo.kioku.judge.answer.v1`"
-            );
-            ensure!(
-                locomo_kioku.retrieval_judge_prompt_id == "locomo.kioku.judge.retrieval.v1",
-                "prompt.locomo_kioku.retrieval_judge_prompt_id must be `locomo.kioku.judge.retrieval.v1`"
-            );
-        }
-        BenchmarkDataset::LongMemEval => {
-            let longmemeval_kioku = prompt.longmemeval_kioku.as_ref().context(
-                "LongMemEval runs require `[prompt.longmemeval_kioku]` with answer/judge prompt ids",
-            )?;
-            ensure!(
-                longmemeval_kioku.answer_template_id == "longmemeval.kioku.answer.v1",
-                "prompt.longmemeval_kioku.answer_template_id must be `longmemeval.kioku.answer.v1`"
-            );
-            ensure!(
-                longmemeval_kioku.answer_judge_prompt_id == "longmemeval.kioku.judge.answer.v1",
-                "prompt.longmemeval_kioku.answer_judge_prompt_id must be `longmemeval.kioku.judge.answer.v1`"
-            );
-            ensure!(
-                longmemeval_kioku.retrieval_judge_prompt_id
-                    == "longmemeval.kioku.judge.retrieval.v1",
-                "prompt.longmemeval_kioku.retrieval_judge_prompt_id must be `longmemeval.kioku.judge.retrieval.v1`"
-            );
-            ensure!(
-                source
-                    .toml
-                    .prompt
-                    .as_ref()
-                    .and_then(|prompt| prompt.locomo_kioku.as_ref())
-                    .is_none(),
-                "inactive prompt section `[prompt.locomo_kioku]` is not allowed when run.dataset = \"longmemeval\""
-            );
+    match judge {
+        JudgeConfig::OpenAiCompatible(openai) => {
+            let _ = source
+                .toml
+                .judge
+                .as_ref()
+                .and_then(|judge| judge.openai_compatible.as_ref())
+                .context("openai-compatible judge config is missing")?;
+            validate_openai_runtime_config(openai, "judge.openai_compatible")?;
         }
     }
 
@@ -295,133 +223,15 @@ fn validate_output_dir(output_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{
-        AnswererConfig, BackendKind, OpenAiCompatibleAnswererConfig, parse_config_file,
-    };
+    use super::super::parse_config_file;
     use crate::config::test_support::write_temp_config;
 
     #[test]
-    fn rejects_inactive_sections_during_validate() {
-        let path = write_temp_config(
-            "inactive",
+    fn rejects_unsupported_backend_and_missing_judge() {
+        let unsupported = write_temp_config(
+            "unsupported-backend",
             r#"
 [run]
-dataset = "longmemeval"
-input = "input.json"
-output_dir = "out"
-
-[backend]
-kind = "return-all"
-
-[answerer]
-kind = "debug"
-
-[judge]
-kind = "openai-compatible"
-
-[judge.openai_compatible]
-base_url = "http://localhost:11434/v1"
-model = "judge-model"
-api_key_env = "OPENAI_API_KEY"
-temperature = 0.0
-max_output_tokens = 512
-timeout_secs = 60
-max_retries = 3
-retry_backoff_ms = 500
-
-[answerer.openai_compatible]
-base_url = "http://localhost:11434/v1"
-model = "test"
-api_key_env = "OPENAI_API_KEY"
-temperature = 0.2
-max_output_tokens = 128
-timeout_secs = 30
-max_retries = 2
-retry_backoff_ms = 100
-
-[prompt.longmemeval_kioku]
-answer_template_id = "longmemeval.kioku.answer.v1"
-answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
-retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
-"#,
-        );
-
-        let error = parse_config_file(path)
-            .unwrap()
-            .into_resolved()
-            .unwrap()
-            .validate()
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("inactive answerer section"));
-    }
-
-    #[test]
-    fn rejects_non_empty_output_dir() {
-        let dir = std::env::temp_dir().join(format!(
-            "kioku-evaluate-config-output-{}",
-            std::process::id()
-        ));
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir).unwrap();
-        }
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("existing.txt"), "x").unwrap();
-
-        let path = write_temp_config(
-            "output",
-            &format!(
-                r#"
-[run]
-dataset = "longmemeval"
-input = "input.json"
-output_dir = "{}"
-
-[backend]
-kind = "return-all"
-
-[answerer]
-kind = "debug"
-
-[judge]
-kind = "openai-compatible"
-
-[judge.openai_compatible]
-base_url = "http://localhost:11434/v1"
-model = "judge-model"
-api_key_env = "OPENAI_API_KEY"
-temperature = 0.0
-max_output_tokens = 512
-timeout_secs = 60
-max_retries = 3
-retry_backoff_ms = 500
-
-[prompt.longmemeval_kioku]
-answer_template_id = "longmemeval.kioku.answer.v1"
-answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
-retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
-"#,
-                dir.display()
-            ),
-        );
-
-        let error = parse_config_file(path)
-            .unwrap()
-            .into_resolved()
-            .unwrap()
-            .validate()
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("already exists and is not empty"));
-    }
-
-    #[test]
-    fn keeps_future_kinds_in_schema_but_marks_them_unsupported() {
-        let path = write_temp_config(
-            "future-kind",
-            r#"
-[run]
-dataset = "locomo"
 input = "input.json"
 output_dir = "out"
 
@@ -429,47 +239,27 @@ output_dir = "out"
 kind = "oracle"
 
 [answerer]
-kind = "openai-compatible"
+kind = "debug"
 
-[answerer.openai_compatible]
-base_url = "http://localhost:11434/v1"
-model = "test"
-api_key_env = "OPENAI_API_KEY"
-temperature = 0.2
-max_output_tokens = 128
-timeout_secs = 30
-max_retries = 2
-retry_backoff_ms = 100
+[benchmark.locomo]
+answer_template_id = "locomo.kioku.answer.v1"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
 "#,
         );
+        let error = parse_config_file(&unsupported)
+            .unwrap()
+            .into_resolved()
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not supported"));
 
-        let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
-        assert_eq!(resolved.run.backend.kind, BackendKind::Oracle);
-        assert_eq!(
-            resolved.run.answerer,
-            AnswererConfig::OpenAiCompatible(OpenAiCompatibleAnswererConfig {
-                base_url: "http://localhost:11434/v1".to_string(),
-                model: "test".to_string(),
-                api_key_env: "OPENAI_API_KEY".to_string(),
-                temperature: 0.2,
-                max_output_tokens: 128,
-                timeout_secs: 30,
-                max_retries: 2,
-                retry_backoff_ms: 100,
-            })
-        );
-
-        let error = resolved.validate().unwrap_err().to_string();
-        assert!(error.contains("backend.kind = \"oracle\""));
-    }
-
-    #[test]
-    fn longmemeval_requires_kioku_prompt_and_judge_settings() {
-        let path = write_temp_config(
-            "longmemeval-prompt-required",
+        let missing_judge = write_temp_config(
+            "missing-judge",
             r#"
 [run]
-dataset = "longmemeval"
 input = "input.json"
 output_dir = "out"
 
@@ -478,16 +268,64 @@ kind = "return-all"
 
 [answerer]
 kind = "debug"
+
+[benchmark.longmemeval]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
 "#,
         );
-
-        let error = parse_config_file(path)
+        let error = parse_config_file(&missing_judge)
             .unwrap()
             .into_resolved()
             .unwrap()
             .validate()
             .unwrap_err()
             .to_string();
-        assert!(error.contains("[judge]") || error.contains("[prompt.longmemeval_kioku]"));
+        assert!(error.contains("[judge]"));
+    }
+
+    #[test]
+    fn validates_benchmark_specific_prompt_ids() {
+        let path = write_temp_config(
+            "invalid-benchmark",
+            r#"
+[run]
+input = "input.json"
+output_dir = "out"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+
+[judge]
+kind = "openai-compatible"
+
+[judge.openai_compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
+[benchmark.locomo]
+answer_template_id = "wrong"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
+"#,
+        );
+        let error = parse_config_file(&path)
+            .unwrap()
+            .into_resolved()
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("benchmark.locomo.answer_template_id"));
     }
 }

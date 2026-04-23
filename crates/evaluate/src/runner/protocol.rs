@@ -1,16 +1,10 @@
-mod locomo;
-mod longmemeval;
-
 use crate::judge::BinaryJudgement;
 use crate::model::{
     BenchmarkCase, BenchmarkDataset, BenchmarkQuestion, GeneratedAnswer, MetricsReport,
 };
-use crate::prompt::{AnswerPromptProfile, PreparedPrompt, PromptContext};
+use crate::prompt::{PreparedPrompt, PromptContext};
 
 use super::ContextTokenPolicy;
-
-pub(crate) use locomo::LoCoMoKiokuEvaluationProtocol;
-pub(crate) use longmemeval::LongMemEvalKiokuEvaluationProtocol;
 
 pub(crate) trait DatasetEvaluationProtocol {
     type MetricInput;
@@ -18,7 +12,6 @@ pub(crate) trait DatasetEvaluationProtocol {
     fn dataset(&self) -> BenchmarkDataset;
     fn context_token_policy(&self) -> ContextTokenPolicy;
     fn include_question(&self, question: &BenchmarkQuestion) -> bool;
-    fn answer_prompt_profile<'a>(&'a self) -> AnswerPromptProfile<'a>;
     fn build_metric_input(
         &self,
         evaluated: &EvaluatedQuestion<'_>,

@@ -1,24 +1,27 @@
 use anyhow::Context;
 
-use crate::model::{BenchmarkDataset, BenchmarkQuestion, MetricsReport};
-use crate::prompt::{AnswerPromptProfile, LocomoKiokuPromptConfig};
+use crate::common::{
+    model::{BenchmarkDataset, BenchmarkQuestion, MetricsReport},
+    runner::{ContextTokenPolicy, DatasetEvaluationProtocol, EvaluatedQuestion},
+};
 
-use super::{DatasetEvaluationProtocol, EvaluatedQuestion};
-use crate::runner::ContextTokenPolicy;
-use crate::runner::metrics::{LoCoMoKiokuMetricInput, build_locomo_kioku_metrics};
+use super::{
+    config::LocomoKiokuPromptConfig,
+    metrics::{LoCoMoKiokuMetricInput, build_metrics},
+};
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct LoCoMoKiokuEvaluationProtocol<'a> {
-    prompt: &'a LocomoKiokuPromptConfig,
+#[derive(Debug, Clone)]
+pub(crate) struct LoCoMoKiokuEvaluationProtocol {
+    prompt: LocomoKiokuPromptConfig,
 }
 
-impl<'a> LoCoMoKiokuEvaluationProtocol<'a> {
-    pub const fn new(prompt: &'a LocomoKiokuPromptConfig) -> Self {
+impl LoCoMoKiokuEvaluationProtocol {
+    pub(crate) fn new(prompt: LocomoKiokuPromptConfig) -> Self {
         Self { prompt }
     }
 }
 
-impl DatasetEvaluationProtocol for LoCoMoKiokuEvaluationProtocol<'_> {
+impl DatasetEvaluationProtocol for LoCoMoKiokuEvaluationProtocol {
     type MetricInput = LoCoMoKiokuMetricInput;
 
     fn dataset(&self) -> BenchmarkDataset {
@@ -31,10 +34,6 @@ impl DatasetEvaluationProtocol for LoCoMoKiokuEvaluationProtocol<'_> {
 
     fn include_question(&self, question: &BenchmarkQuestion) -> bool {
         matches!(question.category, Some(1..=4))
-    }
-
-    fn answer_prompt_profile<'a>(&'a self) -> AnswerPromptProfile<'a> {
-        AnswerPromptProfile::LoCoMoKioku(self.prompt)
     }
 
     fn build_metric_input(
@@ -57,7 +56,7 @@ impl DatasetEvaluationProtocol for LoCoMoKiokuEvaluationProtocol<'_> {
         inputs: &[Self::MetricInput],
         _context_tokenizer: Option<&str>,
     ) -> anyhow::Result<MetricsReport> {
-        Ok(build_locomo_kioku_metrics(
+        Ok(build_metrics(
             inputs,
             &self.prompt.answer_judge_prompt_id,
             &self.prompt.retrieval_judge_prompt_id,
@@ -70,17 +69,20 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
-    use crate::answerer::{Answerer, DebugAnswerer};
-    use crate::backend::ReturnAllMemoryBackend;
-    use crate::judge::{AnswerJudge, BinaryJudgement, RetrievalJudge};
-    use crate::model::{
-        AnswerRequest, BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion,
-        GeneratedAnswer, GoldAnswerVariant, RetrievalBudget,
+    use crate::common::{
+        answerer::{Answerer, DebugAnswerer},
+        backend::ReturnAllMemoryBackend,
+        judge::{AnswerJudge, BinaryJudgement, RetrievalJudge},
+        model::{
+            AnswerRequest, BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion,
+            GeneratedAnswer, GoldAnswerVariant, RetrievalBudget,
+        },
+        prompt::PromptContext,
+        runner::{ContextTokenPolicy, run_pipeline},
     };
-    use crate::prompt::{DefaultPromptBuilder, LocomoKiokuPromptConfig, PromptContext};
-    use crate::runner::{ContextTokenPolicy, run_pipeline};
 
     use super::{DatasetEvaluationProtocol, LoCoMoKiokuEvaluationProtocol};
+    use crate::benchmarks::locomo::{LocomoKiokuPromptConfig, prompt::LocomoPromptBuilder};
 
     #[derive(Debug, Default)]
     struct RecordingAnswerJudge;
@@ -225,8 +227,7 @@ mod tests {
 
     #[test]
     fn locomo_context_token_policy_is_optional() {
-        let prompt = sample_prompt_config();
-        let protocol = LoCoMoKiokuEvaluationProtocol::new(&prompt);
+        let protocol = LoCoMoKiokuEvaluationProtocol::new(sample_prompt_config());
 
         assert_eq!(
             protocol.context_token_policy(),
@@ -237,12 +238,11 @@ mod tests {
     #[tokio::test]
     async fn locomo_pipeline_skips_category_five_from_logs_and_metrics() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt_builder = LocomoPromptBuilder::new(sample_prompt_config());
         let answerer = DebugAnswerer::new("correct");
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge::default();
-        let prompt = sample_prompt_config();
-        let protocol = LoCoMoKiokuEvaluationProtocol::new(&prompt);
+        let protocol = LoCoMoKiokuEvaluationProtocol::new(sample_prompt_config());
         let result = run_pipeline(
             &[sample_case()],
             &mut backend,
@@ -266,13 +266,12 @@ mod tests {
     #[tokio::test]
     async fn retrieval_judge_and_answerer_share_same_context_text() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt_builder = LocomoPromptBuilder::new(sample_prompt_config());
         let answerer = ContextEchoAnswerer::default();
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge::default();
         let seen_contexts = retrieval_judge.seen_contexts.clone();
-        let prompt = sample_prompt_config();
-        let protocol = LoCoMoKiokuEvaluationProtocol::new(&prompt);
+        let protocol = LoCoMoKiokuEvaluationProtocol::new(sample_prompt_config());
         run_pipeline(
             &[sample_case()],
             &mut backend,

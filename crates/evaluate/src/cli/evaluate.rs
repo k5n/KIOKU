@@ -1,26 +1,16 @@
-use anyhow::Context;
 use clap::Parser;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::answerer::{
-    Answerer, DebugAnswerer, LlmBackedAnswerer, LlmBackedAnswererConfig,
-    RigOpenAiCompatibleLlmAnswerer,
+use crate::benchmarks;
+use crate::common::{
+    answerer::{
+        Answerer, DebugAnswerer, LlmBackedAnswerer, LlmBackedAnswererConfig,
+        RigOpenAiCompatibleLlmAnswerer,
+    },
+    backend::{MemoryBackend, ReturnAllMemoryBackend},
+    runner::write_outputs,
 };
-use crate::backend::{MemoryBackend, ReturnAllMemoryBackend};
-use crate::config::{AnswererConfig, BackendKind, JudgeConfig, parse_config_file};
-use crate::datasets::{
-    adapt_locomo_entry, adapt_longmemeval_entry, load_locomo_dataset, load_longmemeval_dataset,
-};
-use crate::judge::{
-    LoCoMoKiokuAnswerJudge, LoCoMoKiokuRetrievalJudge, LongMemEvalKiokuAnswerJudge,
-    LongMemEvalKiokuRetrievalJudge, OpenAiCompatibleJudgeRuntime,
-};
-use crate::model::{BenchmarkCase, BenchmarkDataset};
-use crate::prompt::DefaultPromptBuilder;
-use crate::runner::{
-    LoCoMoKiokuEvaluationProtocol, LongMemEvalKiokuEvaluationProtocol, run_pipeline, write_outputs,
-};
-use crate::token_counter::WhitespaceTokenCounter;
+use crate::config::{AnswererConfig, BackendKind, BenchmarkConfig, parse_config_file};
 
 #[derive(Debug, Parser)]
 #[command(name = "evaluate")]
@@ -35,64 +25,21 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
         .validate()?;
     let run_metadata = validated.resolved_metadata()?;
     let run = validated.run.clone();
-    let cases = load_cases(run.dataset, &run.input)?;
     let mut backend = build_backend(run.backend.kind)?;
-    let prompt_builder = DefaultPromptBuilder;
     let answerer = build_answerer(&run.answerer)?;
 
-    let result = match run.dataset {
-        BenchmarkDataset::LoCoMo => {
-            let prompt = run
-                .prompt
-                .locomo_kioku
-                .as_ref()
-                .context("LoCoMo runs require prompt.locomo_kioku")?;
-            let (answer_judge, retrieval_judge) = build_locomo_kioku_judges(
-                run.judge
-                    .as_ref()
-                    .context("LoCoMo runs require a judge configuration")?,
-                prompt,
-            )?;
-            let protocol = LoCoMoKiokuEvaluationProtocol::new(prompt);
-            run_pipeline(
-                &cases,
-                &mut *backend,
-                &prompt_builder,
-                &*answerer,
-                &answer_judge,
-                &retrieval_judge,
-                None,
-                run.retrieval,
-                &protocol,
-            )
-            .await?
+    let result = match &run.benchmark {
+        BenchmarkConfig::LoCoMo(config) => {
+            let prepared =
+                benchmarks::locomo_api::prepare_run(&run.input, config, run.judge.as_ref())?;
+            benchmarks::execute_prepared_run(prepared, &mut *backend, &*answerer, run.retrieval)
+                .await?
         }
-        BenchmarkDataset::LongMemEval => {
-            let prompt = run
-                .prompt
-                .longmemeval_kioku
-                .as_ref()
-                .context("LongMemEval runs require prompt.longmemeval_kioku")?;
-            let (answer_judge, retrieval_judge) = build_longmemeval_kioku_judges(
-                run.judge
-                    .as_ref()
-                    .context("LongMemEval runs require a judge configuration")?,
-                prompt,
-            )?;
-            let token_counter = WhitespaceTokenCounter;
-            let protocol = LongMemEvalKiokuEvaluationProtocol::new(prompt);
-            run_pipeline(
-                &cases,
-                &mut *backend,
-                &prompt_builder,
-                &*answerer,
-                &answer_judge,
-                &retrieval_judge,
-                Some(&token_counter),
-                run.retrieval,
-                &protocol,
-            )
-            .await?
+        BenchmarkConfig::LongMemEval(config) => {
+            let prepared =
+                benchmarks::longmemeval_api::prepare_run(&run.input, config, run.judge.as_ref())?;
+            benchmarks::execute_prepared_run(prepared, &mut *backend, &*answerer, run.retrieval)
+                .await?
         }
     };
 
@@ -102,26 +49,6 @@ pub async fn run_cli(cli: Cli) -> anyhow::Result<()> {
         &validated.raw_bytes,
         &run_metadata,
     )
-}
-
-fn load_cases(dataset: BenchmarkDataset, input: &Path) -> anyhow::Result<Vec<BenchmarkCase>> {
-    match dataset {
-        BenchmarkDataset::LoCoMo => load_locomo_dataset(input)?
-            .iter()
-            .map(adapt_locomo_entry)
-            .collect::<anyhow::Result<Vec<_>>>()
-            .with_context(|| format!("failed to adapt LoCoMo cases from `{}`", input.display())),
-        BenchmarkDataset::LongMemEval => load_longmemeval_dataset(input)?
-            .iter()
-            .map(adapt_longmemeval_entry)
-            .collect::<anyhow::Result<Vec<_>>>()
-            .with_context(|| {
-                format!(
-                    "failed to adapt LongMemEval cases from `{}`",
-                    input.display()
-                )
-            }),
-    }
 }
 
 fn build_backend(kind: BackendKind) -> anyhow::Result<Box<dyn MemoryBackend>> {
@@ -147,80 +74,6 @@ fn build_answerer(config: &AnswererConfig) -> anyhow::Result<Box<dyn Answerer>> 
                 },
                 llm,
             )))
-        }
-    }
-}
-
-fn build_locomo_kioku_judges(
-    config: &JudgeConfig,
-    prompt: &crate::prompt::LocomoKiokuPromptConfig,
-) -> anyhow::Result<(
-    LoCoMoKiokuAnswerJudge<RigOpenAiCompatibleLlmAnswerer>,
-    LoCoMoKiokuRetrievalJudge<RigOpenAiCompatibleLlmAnswerer>,
-)> {
-    match config {
-        JudgeConfig::OpenAiCompatible(openai) => {
-            let answer_runtime = OpenAiCompatibleJudgeRuntime::new(
-                RigOpenAiCompatibleLlmAnswerer::new(
-                    crate::answerer::RigOpenAiCompatibleConfig::from_judge_config(openai),
-                )?,
-                openai.model.clone(),
-                Some(openai.temperature),
-                Some(openai.max_output_tokens),
-            );
-            let retrieval_runtime = OpenAiCompatibleJudgeRuntime::new(
-                RigOpenAiCompatibleLlmAnswerer::new(
-                    crate::answerer::RigOpenAiCompatibleConfig::from_judge_config(openai),
-                )?,
-                openai.model.clone(),
-                Some(openai.temperature),
-                Some(openai.max_output_tokens),
-            );
-
-            Ok((
-                LoCoMoKiokuAnswerJudge::new(answer_runtime, &prompt.answer_judge_prompt_id),
-                LoCoMoKiokuRetrievalJudge::new(
-                    retrieval_runtime,
-                    &prompt.retrieval_judge_prompt_id,
-                ),
-            ))
-        }
-    }
-}
-
-fn build_longmemeval_kioku_judges(
-    config: &JudgeConfig,
-    prompt: &crate::prompt::LongMemEvalKiokuPromptConfig,
-) -> anyhow::Result<(
-    LongMemEvalKiokuAnswerJudge<RigOpenAiCompatibleLlmAnswerer>,
-    LongMemEvalKiokuRetrievalJudge<RigOpenAiCompatibleLlmAnswerer>,
-)> {
-    match config {
-        JudgeConfig::OpenAiCompatible(openai) => {
-            let answer_runtime = OpenAiCompatibleJudgeRuntime::new(
-                RigOpenAiCompatibleLlmAnswerer::new(
-                    crate::answerer::RigOpenAiCompatibleConfig::from_judge_config(openai),
-                )?,
-                openai.model.clone(),
-                Some(openai.temperature),
-                Some(openai.max_output_tokens),
-            );
-            let retrieval_runtime = OpenAiCompatibleJudgeRuntime::new(
-                RigOpenAiCompatibleLlmAnswerer::new(
-                    crate::answerer::RigOpenAiCompatibleConfig::from_judge_config(openai),
-                )?,
-                openai.model.clone(),
-                Some(openai.temperature),
-                Some(openai.max_output_tokens),
-            );
-
-            Ok((
-                LongMemEvalKiokuAnswerJudge::new(answer_runtime, &prompt.answer_judge_prompt_id),
-                LongMemEvalKiokuRetrievalJudge::new(
-                    retrieval_runtime,
-                    &prompt.retrieval_judge_prompt_id,
-                ),
-            ))
         }
     }
 }
@@ -259,8 +112,8 @@ mod tests {
                 temperature: 0.2,
                 max_output_tokens: 128,
                 timeout_secs: 30,
-                max_retries: 2,
-                retry_backoff_ms: 10,
+                max_retries: 1,
+                retry_backoff_ms: 100,
             },
         ));
         assert!(openai.is_ok());

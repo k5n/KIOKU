@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::benchmarks::{
+    LoCoMoBenchmarkConfig, LocomoKiokuPromptConfig, LongMemEvalBenchmarkConfig,
+    LongMemEvalKiokuPromptConfig,
+};
 use crate::model::{BenchmarkDataset, RetrievalBudget};
-use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
 
 use super::toml::TomlRunConfig;
 
@@ -30,20 +33,34 @@ pub struct ValidatedConfig {
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
-    pub dataset: BenchmarkDataset,
     pub input: PathBuf,
     pub output_dir: PathBuf,
     pub backend: BackendConfig,
     pub answerer: AnswererConfig,
     pub judge: Option<JudgeConfig>,
     pub retrieval: RetrievalBudget,
-    pub prompt: PromptConfig,
+    pub benchmark: BenchmarkConfig,
+}
+
+impl RunConfig {
+    pub fn dataset(&self) -> BenchmarkDataset {
+        self.benchmark.dataset()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptConfig {
-    pub longmemeval_kioku: Option<LongMemEvalKiokuPromptConfig>,
-    pub locomo_kioku: Option<LocomoKiokuPromptConfig>,
+pub enum BenchmarkConfig {
+    LoCoMo(LoCoMoBenchmarkConfig),
+    LongMemEval(LongMemEvalBenchmarkConfig),
+}
+
+impl BenchmarkConfig {
+    pub fn dataset(&self) -> BenchmarkDataset {
+        match self {
+            Self::LoCoMo(_) => BenchmarkDataset::LoCoMo,
+            Self::LongMemEval(_) => BenchmarkDataset::LongMemEval,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

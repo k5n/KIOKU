@@ -15,15 +15,6 @@ pub struct BinaryJudgement {
 }
 
 #[async_trait]
-pub trait Judge {
-    async fn judge(
-        &self,
-        question: &BenchmarkQuestion,
-        generated: &GeneratedAnswer,
-    ) -> anyhow::Result<BinaryJudgement>;
-}
-
-#[async_trait]
 pub trait AnswerJudge: Send + Sync {
     async fn judge_answer(
         &self,

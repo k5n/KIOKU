@@ -6,7 +6,7 @@ mod traits;
 pub use debug::DebugAnswerer;
 pub use llm::{
     LlmAnswerer, LlmBackedAnswerer, LlmBackedAnswererConfig, LlmGenerateRequest,
-    LlmGenerateResponse, LlmUsage,
+    LlmGenerateResponse,
 };
 pub use rig_openai::{RigOpenAiCompatibleConfig, RigOpenAiCompatibleLlmAnswerer};
 pub use traits::Answerer;

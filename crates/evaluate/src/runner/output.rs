@@ -56,6 +56,7 @@ mod tests {
     use super::write_outputs;
     use std::fs::File;
 
+    use crate::benchmarks::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
     use crate::config::{
         AnswererKind, BackendKind, JudgeKind, ResolvedAnswererMetadata, ResolvedBackendMetadata,
         ResolvedJudgeMetadata, ResolvedPromptMetadata, ResolvedRunMetadata,
@@ -64,7 +65,6 @@ mod tests {
         AnswerLogRecord, BenchmarkDataset, DatasetMetrics, MetricProvenance, MetricsReport,
         RetrievalBudget, RetrievalLogRecord,
     };
-    use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
     use crate::runner::EvaluatePipelineResult;
 
     #[test]

@@ -3,10 +3,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::answerer::LlmAnswerer;
-use crate::judge::{AnswerJudge, BinaryJudgement, OpenAiCompatibleJudgeRuntime, RetrievalJudge};
-use crate::model::{BenchmarkQuestion, GeneratedAnswer};
-use crate::prompt::PromptContext;
+use crate::common::{
+    answerer::LlmAnswerer,
+    judge::{AnswerJudge, BinaryJudgement, OpenAiCompatibleJudgeRuntime, RetrievalJudge},
+    model::{BenchmarkQuestion, GeneratedAnswer},
+    prompt::PromptContext,
+};
 
 const RETRIEVAL_JUDGE_KIND: &str = "longmemeval_kioku_retrieval_llm";
 const ANSWER_JUDGE_KIND: &str = "longmemeval_kioku_answer_llm";
@@ -28,13 +30,16 @@ const ANSWER_SYSTEM_PROMPT: &str = concat!(
 );
 
 #[derive(Debug, Clone)]
-pub struct LongMemEvalKiokuRetrievalJudge<T> {
+pub(crate) struct LongMemEvalKiokuRetrievalJudge<T> {
     runtime: OpenAiCompatibleJudgeRuntime<T>,
     prompt_id: String,
 }
 
 impl<T> LongMemEvalKiokuRetrievalJudge<T> {
-    pub fn new(runtime: OpenAiCompatibleJudgeRuntime<T>, prompt_id: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        runtime: OpenAiCompatibleJudgeRuntime<T>,
+        prompt_id: impl Into<String>,
+    ) -> Self {
         Self {
             runtime,
             prompt_id: prompt_id.into(),
@@ -43,13 +48,16 @@ impl<T> LongMemEvalKiokuRetrievalJudge<T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct LongMemEvalKiokuAnswerJudge<T> {
+pub(crate) struct LongMemEvalKiokuAnswerJudge<T> {
     runtime: OpenAiCompatibleJudgeRuntime<T>,
     prompt_id: String,
 }
 
 impl<T> LongMemEvalKiokuAnswerJudge<T> {
-    pub fn new(runtime: OpenAiCompatibleJudgeRuntime<T>, prompt_id: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        runtime: OpenAiCompatibleJudgeRuntime<T>,
+        prompt_id: impl Into<String>,
+    ) -> Self {
         Self {
             runtime,
             prompt_id: prompt_id.into(),
@@ -277,10 +285,12 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use crate::answerer::{LlmAnswerer, LlmGenerateRequest, LlmGenerateResponse};
-    use crate::judge::{AnswerJudge, RetrievalJudge};
-    use crate::model::{BenchmarkQuestion, GeneratedAnswer, GoldAnswerVariant};
-    use crate::prompt::{PromptContext, PromptContextKind};
+    use crate::common::{
+        answerer::{LlmAnswerer, LlmGenerateRequest, LlmGenerateResponse},
+        judge::{AnswerJudge, RetrievalJudge},
+        model::{BenchmarkQuestion, GeneratedAnswer, GoldAnswerVariant},
+        prompt::{PromptContext, PromptContextKind},
+    };
 
     use super::{
         ANSWER_SYSTEM_PROMPT, LongMemEvalKiokuAnswerJudge, LongMemEvalKiokuRetrievalJudge,

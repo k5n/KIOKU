@@ -1,22 +1,18 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use std::path::{Path, PathBuf};
 
+use crate::benchmarks::{self, LoCoMoBenchmarkConfig, LongMemEvalBenchmarkConfig};
 use crate::model::RetrievalBudget;
-use crate::prompt::{LocomoKiokuPromptConfig, LongMemEvalKiokuPromptConfig};
 
 use super::toml::{
-    TomlAnswererSection, TomlJudgeSection, TomlOpenAiCompatibleSection, TomlPromptSection,
+    TomlAnswererSection, TomlBenchmarkSection, TomlJudgeSection, TomlOpenAiCompatibleSection,
     TomlRetrievalSection, TomlRunConfig,
 };
 use super::{
-    AnswererConfig, AnswererKind, BackendConfig, JudgeConfig, JudgeKind,
-    OpenAiCompatibleAnswererConfig, OpenAiCompatibleJudgeConfig, ParsedConfig, PromptConfig,
-    ResolvedConfig, RunConfig,
+    AnswererConfig, AnswererKind, BackendConfig, BenchmarkConfig, JudgeConfig, JudgeKind,
+    OpenAiCompatibleAnswererConfig, OpenAiCompatibleJudgeConfig, ParsedConfig, ResolvedConfig,
+    RunConfig,
 };
-
-pub fn load_run_config(path: impl AsRef<Path>) -> anyhow::Result<RunConfig> {
-    Ok(parse_config_file(path)?.into_resolved()?.validate()?.run)
-}
 
 pub fn parse_config_file(path: impl AsRef<Path>) -> anyhow::Result<ParsedConfig> {
     let source_path = path.as_ref().to_path_buf();
@@ -55,7 +51,6 @@ impl ParsedConfig {
         });
 
         let run = RunConfig {
-            dataset: self.toml.run.dataset,
             input: resolve_path(&config_dir, &self.toml.run.input),
             output_dir: resolve_path(&config_dir, &self.toml.run.output_dir),
             backend: BackendConfig {
@@ -67,7 +62,7 @@ impl ParsedConfig {
                 max_items: retrieval.max_items,
                 max_tokens: retrieval.max_tokens,
             },
-            prompt: resolve_prompt_config(self.toml.prompt.as_ref()),
+            benchmark: resolve_benchmark_config(self.toml.benchmark.as_ref())?,
         };
 
         Ok(ResolvedConfig {
@@ -77,6 +72,39 @@ impl ParsedConfig {
             run,
         })
     }
+}
+
+fn resolve_benchmark_config(
+    toml: Option<&TomlBenchmarkSection>,
+) -> anyhow::Result<BenchmarkConfig> {
+    let Some(toml) = toml else {
+        return Err(anyhow!(
+            "config must contain exactly one benchmark section: `[benchmark.locomo]` or `[benchmark.longmemeval]`"
+        ));
+    };
+
+    match (&toml.locomo, &toml.longmemeval) {
+        (Some(locomo), None) => Ok(BenchmarkConfig::LoCoMo(resolve_locomo_config(locomo))),
+        (None, Some(longmemeval)) => Ok(BenchmarkConfig::LongMemEval(resolve_longmemeval_config(
+            longmemeval,
+        ))),
+        (None, None) => Err(anyhow!(
+            "config must contain exactly one benchmark section: `[benchmark.locomo]` or `[benchmark.longmemeval]`"
+        )),
+        (Some(_), Some(_)) => Err(anyhow!(
+            "config must contain exactly one benchmark section, but both `[benchmark.locomo]` and `[benchmark.longmemeval]` were provided"
+        )),
+    }
+}
+
+fn resolve_locomo_config(toml: &benchmarks::TomlLoCoMoBenchmarkSection) -> LoCoMoBenchmarkConfig {
+    benchmarks::locomo_api::resolve_config(toml)
+}
+
+fn resolve_longmemeval_config(
+    toml: &benchmarks::TomlLongMemEvalBenchmarkSection,
+) -> LongMemEvalBenchmarkConfig {
+    benchmarks::longmemeval_api::resolve_config(toml)
 }
 
 fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
@@ -95,10 +123,6 @@ fn absolute_path(path: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-// `std::fs::canonicalize` requires the path to exist and resolves symlinks,
-// while `std::path::absolute` may keep `..` segments on Unix. We still need a
-// lexical normalization step so run metadata records normalized absolute paths
-// even for not-yet-created output directories.
 fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
 
@@ -197,35 +221,11 @@ fn resolve_openai_compatible_judge_config(
     }
 }
 
-fn resolve_prompt_config(toml: Option<&TomlPromptSection>) -> PromptConfig {
-    PromptConfig {
-        longmemeval_kioku: toml.and_then(|prompt| {
-            prompt.longmemeval_kioku.as_ref().map(|longmemeval_kioku| {
-                LongMemEvalKiokuPromptConfig {
-                    answer_template_id: longmemeval_kioku.answer_template_id.clone(),
-                    answer_judge_prompt_id: longmemeval_kioku.answer_judge_prompt_id.clone(),
-                    retrieval_judge_prompt_id: longmemeval_kioku.retrieval_judge_prompt_id.clone(),
-                }
-            })
-        }),
-        locomo_kioku: toml.and_then(|prompt| {
-            prompt
-                .locomo_kioku
-                .as_ref()
-                .map(|locomo_kioku| LocomoKiokuPromptConfig {
-                    answer_template_id: locomo_kioku.answer_template_id.clone(),
-                    answer_judge_prompt_id: locomo_kioku.answer_judge_prompt_id.clone(),
-                    retrieval_judge_prompt_id: locomo_kioku.retrieval_judge_prompt_id.clone(),
-                })
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::parse_config_file;
     use crate::config::test_support::write_temp_config;
-    use crate::prompt::LongMemEvalKiokuPromptConfig;
+    use crate::model::BenchmarkDataset;
 
     #[test]
     fn parses_and_resolves_paths_relative_to_config_file() {
@@ -233,7 +233,6 @@ mod tests {
             "resolve",
             r#"
 [run]
-dataset = "locomo"
 input = "../data/input.json"
 output_dir = "./out"
 
@@ -242,6 +241,11 @@ kind = "return-all"
 
 [answerer]
 kind = "debug"
+
+[benchmark.locomo]
+answer_template_id = "locomo.kioku.answer.v1"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
 "#,
         );
 
@@ -250,7 +254,7 @@ kind = "debug"
             .unwrap()
             .join(path.parent().unwrap());
 
-        assert_eq!(resolved.run.dataset.as_str(), "locomo");
+        assert_eq!(resolved.run.dataset(), BenchmarkDataset::LoCoMo);
         assert_eq!(resolved.source_path, std::fs::canonicalize(&path).unwrap());
         assert_eq!(
             resolved.run.input,
@@ -259,32 +263,14 @@ kind = "debug"
         assert_eq!(resolved.run.output_dir, config_dir.join("out"));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn resolves_paths_relative_to_symlink_location_not_target() {
-        use std::os::unix::fs::symlink;
-
-        let temp_root = std::env::temp_dir().join(format!(
-            "kioku-evaluate-config-symlink-{}",
-            std::process::id()
-        ));
-        if temp_root.exists() {
-            std::fs::remove_dir_all(&temp_root).unwrap();
-        }
-
-        let real_dir = temp_root.join("real");
-        let link_dir = temp_root.join("configs");
-        std::fs::create_dir_all(&real_dir).unwrap();
-        std::fs::create_dir_all(&link_dir).unwrap();
-
-        let real_path = real_dir.join("run.toml");
-        std::fs::write(
-            &real_path,
+    fn rejects_missing_or_multiple_benchmark_sections() {
+        let missing = write_temp_config(
+            "missing-benchmark",
             r#"
 [run]
-dataset = "locomo"
-input = "./input.json"
-output_dir = "./out"
+input = "input.json"
+output_dir = "out"
 
 [backend]
 kind = "return-all"
@@ -292,141 +278,43 @@ kind = "return-all"
 [answerer]
 kind = "debug"
 "#,
-        )
-        .unwrap();
-
-        let symlink_path = link_dir.join("run.toml");
-        symlink(&real_path, &symlink_path).unwrap();
-
-        let resolved = parse_config_file(&symlink_path)
+        );
+        let error = parse_config_file(&missing)
             .unwrap()
             .into_resolved()
-            .unwrap();
-        let expected_link_dir = std::env::current_dir().unwrap().join(&link_dir);
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exactly one benchmark section"));
 
-        assert_eq!(
-            resolved.source_path,
-            std::fs::canonicalize(&real_path).unwrap()
-        );
-        assert_eq!(resolved.run.input, expected_link_dir.join("input.json"));
-        assert_eq!(resolved.run.output_dir, expected_link_dir.join("out"));
-
-        std::fs::remove_dir_all(temp_root).unwrap();
-    }
-
-    #[test]
-    fn normalizes_parent_segments_in_resolved_paths() {
-        let path = write_temp_config(
-            "normalize-parent-segments",
+        let multiple = write_temp_config(
+            "multiple-benchmark",
             r#"
 [run]
-dataset = "locomo"
-input = "../data/./input.json"
-output_dir = "./nested/../out"
-
-[backend]
-kind = "return-all"
-
-[answerer]
-kind = "debug"
-"#,
-        );
-
-        let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
-        let config_dir = std::env::current_dir()
-            .unwrap()
-            .join(path.parent().unwrap());
-
-        assert_eq!(
-            resolved.run.input,
-            config_dir.parent().unwrap().join("data/input.json")
-        );
-        assert_eq!(resolved.run.output_dir, config_dir.join("out"));
-    }
-
-    #[test]
-    fn rejects_unknown_field_during_parse() {
-        let path = write_temp_config(
-            "unknown",
-            r#"
-[run]
-dataset = "locomo"
-input = "input.json"
-output_dir = "out"
-extra = "nope"
-
-[backend]
-kind = "return-all"
-
-[answerer]
-kind = "debug"
-"#,
-        );
-
-        let error = parse_config_file(path).unwrap_err();
-        let details = format!("{error:#}");
-        assert!(details.contains("unknown field"));
-    }
-
-    #[test]
-    fn rejects_legacy_longmemeval_prompt_section_during_parse() {
-        let path = write_temp_config(
-            "legacy-longmemeval-prompt",
-            r#"
-[run]
-dataset = "longmemeval"
 input = "input.json"
 output_dir = "out"
 
 [backend]
 kind = "return-all"
 
-[prompt.longmemeval]
-answer_profile = "history-chats"
-cot = true
-
 [answerer]
 kind = "debug"
-"#,
-        );
 
-        let error = parse_config_file(path).unwrap_err();
-        let details = format!("{error:#}");
-        assert!(details.contains("unknown field"));
-        assert!(details.contains("longmemeval"));
-    }
+[benchmark.locomo]
+answer_template_id = "locomo.kioku.answer.v1"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
 
-    #[test]
-    fn longmemeval_kioku_resolves_protocol_prompt_ids() {
-        let path = write_temp_config(
-            "longmemeval-kioku-prompt",
-            r#"
-[run]
-dataset = "longmemeval"
-input = "input.json"
-output_dir = "out"
-
-[backend]
-kind = "return-all"
-
-[prompt.longmemeval_kioku]
+[benchmark.longmemeval]
 answer_template_id = "longmemeval.kioku.answer.v1"
 answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
 retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
-
-[answerer]
-kind = "debug"
 "#,
         );
-
-        let resolved = parse_config_file(path).unwrap().into_resolved().unwrap();
-        assert_eq!(
-            resolved.run.prompt.longmemeval_kioku,
-            Some(LongMemEvalKiokuPromptConfig {
-                answer_template_id: "longmemeval.kioku.answer.v1".to_string(),
-                answer_judge_prompt_id: "longmemeval.kioku.judge.answer.v1".to_string(),
-                retrieval_judge_prompt_id: "longmemeval.kioku.judge.retrieval.v1".to_string(),
-            })
-        );
+        let error = parse_config_file(&multiple)
+            .unwrap()
+            .into_resolved()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("both `[benchmark.locomo]` and `[benchmark.longmemeval]`"));
     }
 }

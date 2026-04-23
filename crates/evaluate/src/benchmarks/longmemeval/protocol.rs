@@ -1,24 +1,27 @@
 use anyhow::Context;
 
-use crate::model::{BenchmarkDataset, BenchmarkQuestion, MetricsReport};
-use crate::prompt::{AnswerPromptProfile, LongMemEvalKiokuPromptConfig};
+use crate::common::{
+    model::{BenchmarkDataset, BenchmarkQuestion, MetricsReport},
+    runner::{ContextTokenPolicy, DatasetEvaluationProtocol, EvaluatedQuestion},
+};
 
-use super::{DatasetEvaluationProtocol, EvaluatedQuestion};
-use crate::runner::ContextTokenPolicy;
-use crate::runner::metrics::{LongMemEvalKiokuMetricInput, build_longmemeval_kioku_metrics};
+use super::{
+    config::LongMemEvalKiokuPromptConfig,
+    metrics::{LongMemEvalKiokuMetricInput, build_metrics},
+};
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct LongMemEvalKiokuEvaluationProtocol<'a> {
-    prompt: &'a LongMemEvalKiokuPromptConfig,
+#[derive(Debug, Clone)]
+pub(crate) struct LongMemEvalKiokuEvaluationProtocol {
+    prompt: LongMemEvalKiokuPromptConfig,
 }
 
-impl<'a> LongMemEvalKiokuEvaluationProtocol<'a> {
-    pub const fn new(prompt: &'a LongMemEvalKiokuPromptConfig) -> Self {
+impl LongMemEvalKiokuEvaluationProtocol {
+    pub(crate) fn new(prompt: LongMemEvalKiokuPromptConfig) -> Self {
         Self { prompt }
     }
 }
 
-impl DatasetEvaluationProtocol for LongMemEvalKiokuEvaluationProtocol<'_> {
+impl DatasetEvaluationProtocol for LongMemEvalKiokuEvaluationProtocol {
     type MetricInput = LongMemEvalKiokuMetricInput;
 
     fn dataset(&self) -> BenchmarkDataset {
@@ -31,10 +34,6 @@ impl DatasetEvaluationProtocol for LongMemEvalKiokuEvaluationProtocol<'_> {
 
     fn include_question(&self, _question: &BenchmarkQuestion) -> bool {
         true
-    }
-
-    fn answer_prompt_profile<'a>(&'a self) -> AnswerPromptProfile<'a> {
-        AnswerPromptProfile::LongMemEvalKioku(self.prompt)
     }
 
     fn build_metric_input(
@@ -62,7 +61,7 @@ impl DatasetEvaluationProtocol for LongMemEvalKiokuEvaluationProtocol<'_> {
         inputs: &[Self::MetricInput],
         context_tokenizer: Option<&str>,
     ) -> anyhow::Result<MetricsReport> {
-        Ok(build_longmemeval_kioku_metrics(
+        Ok(build_metrics(
             inputs,
             &self.prompt.answer_judge_prompt_id,
             &self.prompt.retrieval_judge_prompt_id,
@@ -78,18 +77,23 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
-    use crate::answerer::{Answerer, DebugAnswerer};
-    use crate::backend::ReturnAllMemoryBackend;
-    use crate::judge::{AnswerJudge, BinaryJudgement, RetrievalJudge};
-    use crate::model::{
-        AnswerRequest, BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion,
-        GeneratedAnswer, GoldAnswerVariant, RetrievalBudget,
+    use crate::common::{
+        answerer::{Answerer, DebugAnswerer},
+        backend::ReturnAllMemoryBackend,
+        judge::{AnswerJudge, BinaryJudgement, RetrievalJudge},
+        model::{
+            AnswerRequest, BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion,
+            GeneratedAnswer, GoldAnswerVariant, RetrievalBudget,
+        },
+        prompt::PromptContext,
+        runner::{ContextTokenPolicy, run_pipeline},
+        token_counter::WhitespaceTokenCounter,
     };
-    use crate::prompt::{DefaultPromptBuilder, LongMemEvalKiokuPromptConfig, PromptContext};
-    use crate::runner::{ContextTokenPolicy, run_pipeline};
-    use crate::token_counter::WhitespaceTokenCounter;
 
     use super::{DatasetEvaluationProtocol, LongMemEvalKiokuEvaluationProtocol};
+    use crate::benchmarks::longmemeval::{
+        LongMemEvalKiokuPromptConfig, prompt::LongMemEvalPromptBuilder,
+    };
 
     #[derive(Debug, Default)]
     struct RecordingAnswerJudge;
@@ -222,8 +226,7 @@ mod tests {
 
     #[test]
     fn longmemeval_context_token_policy_is_required() {
-        let prompt = sample_prompt_config();
-        let protocol = LongMemEvalKiokuEvaluationProtocol::new(&prompt);
+        let protocol = LongMemEvalKiokuEvaluationProtocol::new(sample_prompt_config());
 
         assert_eq!(
             protocol.context_token_policy(),
@@ -234,14 +237,13 @@ mod tests {
     #[tokio::test]
     async fn retrieval_judge_and_answerer_share_same_context_text() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt_builder = LongMemEvalPromptBuilder::new(sample_prompt_config());
         let answerer = ContextEchoAnswerer::default();
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge::default();
         let seen_contexts = retrieval_judge.seen_contexts.clone();
         let token_counter = WhitespaceTokenCounter;
-        let prompt = sample_prompt_config();
-        let protocol = LongMemEvalKiokuEvaluationProtocol::new(&prompt);
+        let protocol = LongMemEvalKiokuEvaluationProtocol::new(sample_prompt_config());
         run_pipeline(
             &[sample_case(false)],
             &mut backend,
@@ -264,13 +266,12 @@ mod tests {
     #[tokio::test]
     async fn longmemeval_metrics_exclude_abstention_from_main_scores() {
         let mut backend = ReturnAllMemoryBackend::default();
-        let prompt_builder = DefaultPromptBuilder;
+        let prompt_builder = LongMemEvalPromptBuilder::new(sample_prompt_config());
         let answerer = DebugAnswerer::new("correct");
         let answer_judge = RecordingAnswerJudge;
         let retrieval_judge = RecordingRetrievalJudge::default();
         let token_counter = WhitespaceTokenCounter;
-        let prompt = sample_prompt_config();
-        let protocol = LongMemEvalKiokuEvaluationProtocol::new(&prompt);
+        let protocol = LongMemEvalKiokuEvaluationProtocol::new(sample_prompt_config());
         let result = run_pipeline(
             &[sample_case(false), sample_case(true)],
             &mut backend,

@@ -1,10 +1,13 @@
-pub mod answerer;
-pub mod backend;
-pub mod cli;
-pub mod config;
-pub mod datasets;
-pub mod judge;
-pub mod model;
-pub mod prompt;
-pub mod runner;
-pub mod token_counter;
+mod answerer;
+mod backend;
+mod benchmarks;
+mod cli;
+mod common;
+mod config;
+mod judge;
+mod model;
+mod prompt;
+mod runner;
+mod token_counter;
+
+pub use cli::{Cli, run_cli};

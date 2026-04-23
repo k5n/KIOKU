@@ -5,11 +5,11 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::model::{
+use crate::common::model::{
     BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion, GoldAnswerVariant,
 };
 
-pub type LoCoMoDataset = Vec<ConversationEntry>;
+type LoCoMoDataset = Vec<ConversationEntry>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConversationEntry {
@@ -202,13 +202,13 @@ impl ParsedSessionKey {
     }
 }
 
-pub fn load_locomo_dataset(path: &Path) -> anyhow::Result<LoCoMoDataset> {
+fn load_locomo_dataset(path: &Path) -> anyhow::Result<LoCoMoDataset> {
     let json_data = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read LoCoMo dataset file: {}", path.display()))?;
     serde_json::from_str(&json_data).context("failed to parse LoCoMo dataset JSON")
 }
 
-pub fn adapt_locomo_entry(entry: &ConversationEntry) -> anyhow::Result<BenchmarkCase> {
+fn adapt_locomo_entry(entry: &ConversationEntry) -> anyhow::Result<BenchmarkCase> {
     let case_id = format!("locomo:{}", entry.sample_id);
     let ordered_sessions = entry.conversation.ordered_sessions()?;
     let session_times: Vec<_> = ordered_sessions
@@ -303,6 +303,14 @@ pub fn adapt_locomo_entry(entry: &ConversationEntry) -> anyhow::Result<Benchmark
             "speaker_b": entry.conversation.speaker_b,
         }),
     })
+}
+
+pub(crate) fn load_dataset(path: &Path) -> anyhow::Result<Vec<BenchmarkCase>> {
+    load_locomo_dataset(path)?
+        .iter()
+        .map(adapt_locomo_entry)
+        .collect::<anyhow::Result<Vec<_>>>()
+        .with_context(|| format!("failed to adapt LoCoMo cases from `{}`", path.display()))
 }
 
 fn parse_locomo_datetime(value: &str) -> anyhow::Result<DateTime<Utc>> {

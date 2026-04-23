@@ -1,15 +1,15 @@
-pub mod answer;
-pub mod benchmark;
-pub mod metrics;
-pub mod retrieval;
+mod answer;
+mod benchmark;
+mod metrics;
+mod retrieval;
 
-pub use answer::{AnswerRequest, GeneratedAnswer};
-pub use benchmark::{
+pub(crate) use answer::{AnswerRequest, GeneratedAnswer};
+pub(crate) use benchmark::{
     BenchmarkCase, BenchmarkDataset, BenchmarkEvent, BenchmarkQuestion, EvalScope,
     GoldAnswerVariant,
 };
-pub use metrics::{
+pub(crate) use metrics::{
     AnswerLogRecord, CategoryMetrics, DatasetMetrics, MetricProvenance, MetricsReport,
     RetrievalLogRecord,
 };
-pub use retrieval::{QueryInput, QueryOutput, RetrievalBudget};
+pub(crate) use retrieval::{QueryInput, QueryOutput, RetrievalBudget};
