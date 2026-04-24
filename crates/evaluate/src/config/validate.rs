@@ -73,7 +73,7 @@ fn validate_answerer(answerer: &AnswererConfig, source: &ResolvedConfig) -> anyh
             let _ = source.toml.answerer.debug.as_ref();
             ensure!(
                 source.toml.answerer.openai_compatible.is_none(),
-                "inactive answerer section `[answerer.openai_compatible]` is not allowed when answerer.kind = \"debug\""
+                "inactive answerer section `[answerer.openai-compatible]` is not allowed when answerer.kind = \"debug\""
             );
         }
         AnswererConfig::OpenAiCompatible(openai) => {
@@ -87,7 +87,7 @@ fn validate_answerer(answerer: &AnswererConfig, source: &ResolvedConfig) -> anyh
                 .openai_compatible
                 .as_ref()
                 .context("openai-compatible answerer config is missing")?;
-            validate_openai_runtime_config(openai, "answerer.openai_compatible")?;
+            validate_openai_runtime_config(openai, "answerer.openai-compatible")?;
         }
     }
 
@@ -114,7 +114,7 @@ fn validate_judge(
                 .as_ref()
                 .and_then(|judge| judge.openai_compatible.as_ref())
                 .context("openai-compatible judge config is missing")?;
-            validate_openai_runtime_config(openai, "judge.openai_compatible")?;
+            validate_openai_runtime_config(openai, "judge.openai-compatible")?;
         }
     }
 
@@ -303,7 +303,7 @@ kind = "debug"
 [judge]
 kind = "openai-compatible"
 
-[judge.openai_compatible]
+[judge.openai-compatible]
 base_url = "http://localhost:11434/v1"
 model = "judge-model"
 api_key_env = "OPENAI_API_KEY"
@@ -327,5 +327,120 @@ retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
             .unwrap_err()
             .to_string();
         assert!(error.contains("benchmark.locomo.answer_template_id"));
+    }
+
+    #[test]
+    fn rejects_inactive_sections_during_validate() {
+        let path = write_temp_config(
+            "inactive",
+            r#"
+[run]
+input = "input.json"
+output_dir = "out"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+
+[judge]
+kind = "openai-compatible"
+
+[judge.openai-compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
+[answerer.openai-compatible]
+base_url = "http://localhost:11434/v1"
+model = "test"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.2
+max_output_tokens = 128
+timeout_secs = 30
+max_retries = 2
+retry_backoff_ms = 100
+
+[benchmark.longmemeval]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
+"#,
+        );
+
+        let error = parse_config_file(path)
+            .unwrap()
+            .into_resolved()
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("inactive answerer section"));
+    }
+
+    #[test]
+    fn rejects_non_empty_output_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "kioku-evaluate-config-output-{}",
+            std::process::id()
+        ));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.txt"), "x").unwrap();
+
+        let path = write_temp_config(
+            "output",
+            &format!(
+                r#"
+[run]
+input = "input.json"
+output_dir = "{}"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+
+[judge]
+kind = "openai-compatible"
+
+[judge.openai-compatible]
+base_url = "http://localhost:11434/v1"
+model = "judge-model"
+api_key_env = "OPENAI_API_KEY"
+temperature = 0.0
+max_output_tokens = 512
+timeout_secs = 60
+max_retries = 3
+retry_backoff_ms = 500
+
+[benchmark.longmemeval]
+answer_template_id = "longmemeval.kioku.answer.v1"
+answer_judge_prompt_id = "longmemeval.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
+"#,
+                dir.display()
+            ),
+        );
+
+        let error = parse_config_file(path)
+            .unwrap()
+            .into_resolved()
+            .unwrap()
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("already exists and is not empty"));
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

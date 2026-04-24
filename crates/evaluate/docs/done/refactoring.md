@@ -71,7 +71,7 @@ pub struct PromptConfig {
 - 両方 `Some`
 - `run.dataset = "locomo"` なのに `longmemeval_kioku` が `Some`
 
-さらに現在の入力 config も、`run.dataset` と top-level の `[prompt.*]` section が分離しているため、同じ無効状態を TOML 上でそのまま表現できてしまいます。  
+さらに現在の入力 config も、`run.dataset` と top-level の `[prompt.*]` section が分離しているため、同じ無効状態を TOML 上でそのまま表現できてしまいます。
 そのため `validate.rs` に benchmark ごとの否定条件が増えています。これは構造上の問題です。
 
 ### 2.4 `mod.rs` / `lib.rs` の公開面が広すぎる
@@ -224,7 +224,7 @@ crates/evaluate/src/
 
 ### 6.1 benchmark config を型安全にする
 
-現在の問題は、内部の `PromptConfig` だけでなく、入力 config でも `run.dataset` と `[prompt.*]` が分離していることです。  
+現在の問題は、内部の `PromptConfig` だけでなく、入力 config でも `run.dataset` と `[prompt.*]` が分離していることです。
 したがって、内部型と入力 TOML の両方をまとめて変えます。
 
 新しい入力 config は、top-level `prompt` section を廃止し、benchmark 選択と benchmark 固有設定を同じ section に持たせます。例えば次です。
@@ -243,7 +243,7 @@ kind = "debug"
 [judge]
 kind = "openai-compatible"
 
-[judge.openai_compatible]
+[judge.openai-compatible]
 base_url = "http://localhost:11434/v1"
 model = "judge-model"
 api_key_env = "OPENAI_API_KEY"
@@ -273,7 +273,7 @@ kind = "debug"
 [judge]
 kind = "openai-compatible"
 
-[judge.openai_compatible]
+[judge.openai-compatible]
 base_url = "http://localhost:11434/v1"
 model = "judge-model"
 api_key_env = "OPENAI_API_KEY"
@@ -316,7 +316,7 @@ pub struct LoCoMoBenchmarkConfig {
 }
 ```
 
-ここでの benchmark config や prompt config は、**参照ではなく所有で扱う**前提にします。  
+ここでの benchmark config や prompt config は、**参照ではなく所有で扱う**前提にします。
 少なくとも現状の `LocomoKiokuPromptConfig` / `LongMemEvalKiokuPromptConfig` は prompt id を表す少数の `String` からなる value object なので、`protocol` や benchmark bundle が clone して所有して問題ありません。むしろ borrow にすると、`prepare_run(...)` が返す bundle の中で「config を所有しつつ protocol がそれを参照する」形になりやすく、不要な lifetime 制約や自己参照に近い構造を招きます。
 
 したがって、benchmark module 間の所有権ルールは次で統一します。
@@ -326,10 +326,10 @@ pub struct LoCoMoBenchmarkConfig {
 - benchmark judge は必要な prompt id を `String` として所有する
 - `PreparedBenchmarkRun` は自己参照を含まない所有型にする
 
-`run.dataset` と `[prompt.*]` を別々に持つ構造は廃止します。  
+`run.dataset` と `[prompt.*]` を別々に持つ構造は廃止します。
 旧 config 形式との互換レイヤは作らず、parser は新しい `[benchmark.<name>]` 形式だけを受け付ける方針にします。
 
-さらに benchmark section は「0 個または 2 個以上」を許さず、**config load の validation 段階でちょうど 1 つだけ存在する**ことを強制します。  
+さらに benchmark section は「0 個または 2 個以上」を許さず、**config load の validation 段階でちょうど 1 つだけ存在する**ことを強制します。
 具体的には `toml.rs` 側では benchmark 入力を wrapper struct として受けます。例えば `TomlBenchmarkSection { locomo: Option<...>, longmemeval: Option<...> }` のように deserialize 自体は許容し、`validate.rs` 側で `[benchmark.locomo]` または `[benchmark.longmemeval]` のどちらか 1 つだけが存在することを検証します。これにより、benchmark 未指定・複数同時指定の両方を config error として reject できます。
 
 これにより、次が不要になります。
@@ -338,7 +338,7 @@ pub struct LoCoMoBenchmarkConfig {
 - inactive prompt section の手動 reject
 - `PromptConfig` の `Option` 2 本構成を前提にした resolve / validate 分岐
 
-一方で、`run.resolved.json` / `answers.jsonl` / `retrieval.jsonl` / `metrics.json` の schema は維持するため、`metadata.rs` では `BenchmarkConfig` から既存 schema への projection を行います。  
+一方で、`run.resolved.json` / `answers.jsonl` / `retrieval.jsonl` / `metrics.json` の schema は維持するため、`metadata.rs` では `BenchmarkConfig` から既存 schema への projection を行います。
 `run.config.toml` は raw input copy なので、新しい入力形式に合わせて内容が変わります。つまり「入力 config 形式と `run.config.toml` の内容は変わるが、解決済み設定と評価結果 artifact の schema は壊さない」という方針です。
 
 また、`config` module は `common` には入れません。`common` は benchmark 非依存の実行部品だけを置く層であり、入力形式と benchmark 選択を扱う `config` は top-level の orchestration 層として残します。
@@ -423,7 +423,7 @@ pub(crate) struct PreparedBenchmarkRun<PB, P, AJ, RJ> {
 }
 ```
 
-このとき `PB` / `P` / `AJ` / `RJ` は、benchmark config の一部を borrow する前提にしません。  
+このとき `PB` / `P` / `AJ` / `RJ` は、benchmark config の一部を borrow する前提にしません。
 特に prompt builder と protocol は `&LocomoKiokuPromptConfig` のような参照を保持するのではなく、必要な prompt config を clone して所有する形を推奨します。judge も同様に、必要な prompt id を借用ではなく `String` として保持します。これにより `prepare_run(...)` が返す bundle を、lifetime parameter なしの通常の所有型として組み立てられます。
 
 この方針にすると、次の結び付き条件を benchmark module 内へ閉じ込められます。

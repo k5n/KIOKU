@@ -634,7 +634,6 @@ v1 では judge model は answer judge / retrieval judge で共通とします�
 
 ```toml
 [run]
-dataset = "locomo"
 input = "..."
 output_dir = "..."
 
@@ -670,7 +669,7 @@ retry_backoff_ms = 500
 [retrieval]
 max_items = 12
 
-[prompt.locomo_kioku]
+[benchmark.locomo]
 answer_template_id = "locomo.kioku.answer.v1"
 answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
 retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"

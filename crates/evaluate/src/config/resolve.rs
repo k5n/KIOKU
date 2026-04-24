@@ -317,4 +317,126 @@ retrieval_judge_prompt_id = "longmemeval.kioku.judge.retrieval.v1"
             .to_string();
         assert!(error.contains("both `[benchmark.locomo]` and `[benchmark.longmemeval]`"));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_paths_relative_to_symlink_location_not_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "kioku-evaluate-config-symlink-{}",
+            std::process::id()
+        ));
+        if temp_root.exists() {
+            std::fs::remove_dir_all(&temp_root).unwrap();
+        }
+
+        let real_dir = temp_root.join("real");
+        let link_dir = temp_root.join("configs");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::create_dir_all(&link_dir).unwrap();
+
+        let real_path = real_dir.join("run.toml");
+        std::fs::write(
+            &real_path,
+            r#"
+[run]
+input = "./input.json"
+output_dir = "./out"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+
+[benchmark.locomo]
+answer_template_id = "locomo.kioku.answer.v1"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
+"#,
+        )
+        .unwrap();
+
+        let symlink_path = link_dir.join("run.toml");
+        symlink(&real_path, &symlink_path).unwrap();
+
+        let resolved = parse_config_file(&symlink_path)
+            .unwrap()
+            .into_resolved()
+            .unwrap();
+        let expected_link_dir = std::env::current_dir().unwrap().join(&link_dir);
+
+        assert_eq!(
+            resolved.source_path,
+            std::fs::canonicalize(&real_path).unwrap()
+        );
+        assert_eq!(resolved.run.input, expected_link_dir.join("input.json"));
+        assert_eq!(resolved.run.output_dir, expected_link_dir.join("out"));
+
+        std::fs::remove_dir_all(temp_root).unwrap();
+    }
+
+    #[test]
+    fn normalizes_parent_segments_in_resolved_paths() {
+        let path = write_temp_config(
+            "normalize-parent-segments",
+            r#"
+[run]
+input = "../data/./input.json"
+output_dir = "./nested/../out"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+
+[benchmark.locomo]
+answer_template_id = "locomo.kioku.answer.v1"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
+"#,
+        );
+
+        let resolved = parse_config_file(&path).unwrap().into_resolved().unwrap();
+        let config_dir = std::env::current_dir()
+            .unwrap()
+            .join(path.parent().unwrap());
+
+        assert_eq!(resolved.run.dataset(), BenchmarkDataset::LoCoMo);
+        assert_eq!(
+            resolved.run.input,
+            config_dir.parent().unwrap().join("data/input.json")
+        );
+        assert_eq!(resolved.run.output_dir, config_dir.join("out"));
+    }
+
+    #[test]
+    fn rejects_unknown_field_during_parse() {
+        let path = write_temp_config(
+            "unknown",
+            r#"
+[run]
+input = "input.json"
+output_dir = "out"
+extra = "nope"
+
+[backend]
+kind = "return-all"
+
+[answerer]
+kind = "debug"
+
+[benchmark.locomo]
+answer_template_id = "locomo.kioku.answer.v1"
+answer_judge_prompt_id = "locomo.kioku.judge.answer.v1"
+retrieval_judge_prompt_id = "locomo.kioku.judge.retrieval.v1"
+"#,
+        );
+
+        let error = parse_config_file(path).unwrap_err();
+        let details = format!("{error:#}");
+        assert!(details.contains("unknown field"));
+    }
 }

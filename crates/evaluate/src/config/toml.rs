@@ -34,6 +34,7 @@ pub(super) struct TomlBenchmarkSection {
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlBackendSection {
     pub(super) kind: BackendKind,
+    #[serde(rename = "return-all", alias = "return_all")]
     pub(super) return_all: Option<EmptySection>,
     pub(super) oracle: Option<EmptySection>,
     pub(super) kioku: Option<EmptySection>,
@@ -51,6 +52,7 @@ pub(super) struct TomlRetrievalSection {
 pub(super) struct TomlAnswererSection {
     pub(super) kind: AnswererKind,
     pub(super) debug: Option<EmptySection>,
+    #[serde(rename = "openai-compatible", alias = "openai_compatible")]
     pub(super) openai_compatible: Option<TomlOpenAiCompatibleSection>,
 }
 
@@ -71,6 +73,7 @@ pub(super) struct TomlOpenAiCompatibleSection {
 #[serde(deny_unknown_fields)]
 pub(super) struct TomlJudgeSection {
     pub(super) kind: JudgeKind,
+    #[serde(rename = "openai-compatible", alias = "openai_compatible")]
     pub(super) openai_compatible: Option<TomlOpenAiCompatibleSection>,
 }
 

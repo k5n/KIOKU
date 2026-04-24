@@ -112,7 +112,7 @@ kind = "debug"
 [judge]
 kind = "openai-compatible"
 
-[judge.openai_compatible]
+[judge.openai-compatible]
 base_url = "http://localhost:11434/v1"
 model = "judge-model"
 api_key_env = "OPENAI_API_KEY"
@@ -157,7 +157,7 @@ kind = "return-all"
 [answerer]
 kind = "openai-compatible"
 
-[answerer.openai_compatible]
+[answerer.openai-compatible]
 base_url = "http://localhost:11434/v1"
 model = "test"
 api_key_env = "OPENAI_API_KEY"
@@ -170,7 +170,7 @@ retry_backoff_ms = 250
 [judge]
 kind = "openai-compatible"
 
-[judge.openai_compatible]
+[judge.openai-compatible]
 base_url = "http://localhost:11434/v1"
 model = "judge-model"
 api_key_env = "OPENAI_API_KEY"
